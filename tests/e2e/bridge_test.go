@@ -70,9 +70,11 @@ type env struct {
 	// roomsDown makes the homeserver answer the bridge's createRoom with 500, as if it were down.
 	roomsDown *atomic.Bool
 	// away makes the homeserver answer the bridge 502 to everything, as if it were down behind its proxy;
-	// versions counts the bridge's checks of it.
+	// versions counts the bridge's checks of it (one a poll).
 	away     *atomic.Bool
 	versions *atomic.Int32
+	// writesAway answers 502 to every write of the bridge while reads still work.
+	writesAway *atomic.Bool
 	// failing makes createRoom answer 500 for one chat: a lower-case EduPage id → *atomic.Int32 of tries.
 	failing *sync.Map
 }
@@ -169,14 +171,14 @@ appservice_dir = "%s"
 	}
 
 	// The bridge talks to the homeserver through a proxy that can refuse to make rooms.
-	roomsDown, failing, away, versions := &atomic.Bool{}, &sync.Map{}, &atomic.Bool{}, &atomic.Int32{}
+	roomsDown, failing, away, versions, writesAway := &atomic.Bool{}, &sync.Map{}, &atomic.Bool{}, &atomic.Int32{}, &atomic.Bool{}
 	target, _ := url.Parse(hsURL)
 	rp := httputil.NewSingleHostReverseProxy(target)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/_matrix/client/versions" {
+		if strings.HasSuffix(r.URL.Path, "/account_data/io.github.gooder24.edupage.poll") {
 			versions.Add(1)
 		}
-		if away.Load() {
+		if away.Load() || writesAway.Load() && r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
@@ -272,7 +274,7 @@ logging:
 			t.Logf("bridge log (last 60 lines):\n%s", strings.Join(lines[max(0, len(lines)-60):], "\n"))
 		}
 	})
-	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, failing: failing, away: away, versions: versions, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
+	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, failing: failing, away: away, versions: versions, writesAway: writesAway, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
 	if !until(30*time.Second, func() bool { return e.provision("GET", "/v3/whoami", nil, nil) == nil }) {
 		t.Fatal("bridge did not start")
 	}

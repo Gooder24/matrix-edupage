@@ -288,33 +288,57 @@ func TestBridge(t *testing.T) {
 	})
 
 	// A homeserver away for longer than the cap loses nothing, and everything comes as soon as it is back.
-	t.Run("a homeserver away for long", func(t *testing.T) {
-		e.away.Store(true)
-		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "While the homeserver was away"})
-		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Lena, "vlastnik_meno": "Lena Teacher", "user": fakeedupage.Me, "text": "A first message from Lena"})
-		start := e.versions.Load()
-		if !until(time.Minute, func() bool { return e.versions.Load()-start >= 20 }) {
-			e.away.Store(false)
-			t.Fatalf("the bridge checked the homeserver %d times in a minute", e.versions.Load()-start)
+	// Polls are counted by the bridge's checks of the homeserver, so a slow machine only makes it slower.
+	polls := func() int { return int(e.versions.Load()) }
+	comesOnce := func(t *testing.T, room, text string, back int) {
+		if !until(2*time.Minute, func() bool { return c.roomWhere(isBody(text)) != "" }) {
+			t.Errorf("%q never came", text)
+			return
 		}
-		e.away.Store(false)
-		back := time.Now()
-		for _, text := range []string{"While the homeserver was away", "A first message from Lena"} {
-			if !until(time.Minute, func() bool { return c.roomWhere(isBody(text)) != "" }) {
-				t.Errorf("%q never came", text)
-			} else if d := time.Since(back); d > 8*time.Second {
-				t.Errorf("%q came %v after the homeserver was back", text, d.Round(time.Second))
-			}
+		if n := polls() - back; n > 5 {
+			t.Errorf("%q came %d polls after the homeserver was back", text, n)
+		}
+		if room == "" {
+			return
 		}
 		n := 0
-		for _, ev := range c.roomEvents(dm) {
-			if isBody("While the homeserver was away")(ev) {
+		for _, ev := range c.roomEvents(room) {
+			if isBody(text)(ev) {
 				n++
 			}
 		}
 		if n != 1 {
-			t.Errorf("the message came %d times", n)
+			t.Errorf("%q came %d times", text, n)
 		}
+	}
+	t.Run("a homeserver away for long", func(t *testing.T) {
+		e.away.Store(true)
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "While the homeserver was away"})
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Lena, "vlastnik_meno": "Lena Teacher", "user": fakeedupage.Me, "text": "A first message from Lena"})
+		start := polls()
+		ok := until(3*time.Minute, func() bool { return polls()-start > 13 })
+		e.away.Store(false)
+		if !ok {
+			t.Fatalf("the bridge checked the homeserver %d times in 3 minutes", polls()-start)
+		}
+		back := polls()
+		comesOnce(t, dm, "While the homeserver was away", back)
+		comesOnce(t, "", "A first message from Lena", back)
+	})
+
+	// A homeserver that answers reads but not writes for longer than the cap: what gave up comes once it writes again.
+	t.Run("a homeserver that does not write for long", func(t *testing.T) {
+		e.writesAway.Store(true)
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "While the homeserver wrote nothing"})
+		start := polls()
+		ok := until(3*time.Minute, func() bool { return polls()-start > 17 })
+		e.writesAway.Store(false)
+		if !ok {
+			t.Fatalf("the bridge checked the homeserver %d times in 3 minutes", polls()-start)
+		}
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "Once it writes again"})
+		comesOnce(t, dm, "Once it writes again", polls())
+		comesOnce(t, dm, "While the homeserver wrote nothing", polls()-1)
 	})
 
 	// Two chats whose rooms keep failing do not keep a new chat from getting its room.

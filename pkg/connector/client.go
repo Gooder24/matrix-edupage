@@ -327,7 +327,8 @@ const roomTimeout = 30 * time.Second
 
 var errHomeserverAway = errors.New("the homeserver does not answer")
 
-// homeserverAnswers asks the homeserver for its versions once, without retries.
+// homeserverAnswers makes one small write as the bridge bot, without retries: a homeserver that reads but
+// does not write is away too.
 func (ec *EduPageClient) homeserverAnswers(ctx context.Context) error {
 	mc, ok := ec.Main.Bridge.Matrix.(*matrix.Connector)
 	if !ok {
@@ -335,8 +336,7 @@ func (ec *EduPageClient) homeserverAnswers(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(mautrix.WithMaxRetries(ctx, 0), 10*time.Second)
 	defer cancel()
-	_, err := mc.AS.BotClient().Versions(ctx)
-	return err
+	return mc.AS.BotClient().SetAccountData(ctx, "io.github.gooder24.edupage.poll", map[string]int64{"at": time.Now().Unix()})
 }
 
 // noAnswer: statuses that a proxy gives for a homeserver that is down or too busy, not the homeserver's
