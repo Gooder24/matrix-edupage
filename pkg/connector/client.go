@@ -39,6 +39,8 @@ type EduPageClient struct {
 	tries map[int64]int
 	// roomsDown: the homeserver did not make a room in this poll, so the poll makes no more.
 	roomsDown bool
+	// roomFails: polls in a row in which a portal's room did not come because the homeserver did not answer.
+	roomFails map[networkid.PortalKey]int
 	saveMu    sync.Mutex
 }
 
