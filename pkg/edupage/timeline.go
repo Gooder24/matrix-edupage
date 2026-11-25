@@ -254,11 +254,21 @@ func nonZero(v any) bool {
 	return true
 }
 
+// AnswerCardsZero reports whether EduPage gave the number of cards that ask for an answer as a number,
+// and whether it is 0; edupage-api reads the cards only then.
+func (hw *Homework) AnswerCardsZero() (zero, ok bool) {
+	if hw == nil {
+		return false, false
+	}
+	n, ok := hw.AnswerCards.(float64)
+	return ok && n == 0, ok
+}
+
 // Material reads a homework's cards the way edupage.org's player does. Only plain homework whose
 // cards ask for no answer: reading it marks nothing as seen or started. Others give an empty Material.
 func (c *Client) Material(ctx context.Context, hw *Homework) (*Material, error) {
 	// Like edupage-api: cards only when EduPage says outright that none of them asks for an answer.
-	if hw == nil || hw.Type != "etesthw|hw" || !nonZero(hw.Cards) || hw.AnswerCards == nil || nonZero(hw.AnswerCards) {
+	if zero, ok := hw.AnswerCardsZero(); hw == nil || hw.Type != "etesthw|hw" || !nonZero(hw.Cards) || !ok || !zero {
 		return &Material{}, nil
 	}
 	form := url.Values{"testid": {string(hw.TestID)}, "superid": {string(hw.SuperID)}, "pridelenieid": {""}, "vysledokid": {""}}

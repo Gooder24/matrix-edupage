@@ -86,6 +86,13 @@ func New() *Server {
 		"text": "Is the form signed?", "cas_pridania": stamp(now.Add(-30 * time.Minute))})
 	s.add(map[string]any{"typ": "sprava", "vlastnik": Bea, "vlastnik_meno": "Bea Teacher", "user": Cyril, "reakcia_na": early,
 		"text": "I signed it", "cas_pridania": stamp(now.Add(-35 * time.Minute))})
+	// A chain of replies to replies, each dated before the one it answers.
+	prev := s.add(map[string]any{"typ": "sprava", "vlastnik": Cyril, "vlastnik_meno": "Cyril Teacher", "user": Me, "user_meno": "Alex Pupil",
+		"text": "Chain start", "cas_pridania": stamp(now.Add(-20 * time.Minute))})
+	for i := 1; i <= 5; i++ {
+		prev = s.add(map[string]any{"typ": "sprava", "vlastnik": Bea, "vlastnik_meno": "Bea Teacher", "user": Cyril, "reakcia_na": prev,
+			"text": fmt.Sprintf("Chain link %d", i), "cas_pridania": stamp(now.Add(-time.Duration(20+i) * time.Minute))})
+	}
 	s.add(map[string]any{"typ": "sprava", "vlastnik": "Only" + Me, "vlastnik_meno": "Alex Pupil", "user": Bea, "user_meno": "Bea Teacher",
 		"text": "Sent from the phone", "cas_pridania": stamp(now.Add(-25 * time.Minute))})
 	s.Grade = s.add(map[string]any{"typ": "znamka", "vlastnik": Bea, "vlastnik_meno": "Bea Teacher", "text": "Mathematics: 1",

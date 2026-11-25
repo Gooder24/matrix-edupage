@@ -106,3 +106,15 @@ func TestDownloadStaysOnTheSchool(t *testing.T) {
 		t.Errorf("a redirect within the school: %q %v", data, err)
 	}
 }
+
+func TestAnswerCardsZero(t *testing.T) {
+	for _, c := range []struct {
+		v        any
+		zero, ok bool
+	}{{float64(0), true, true}, {float64(2), false, true}, {"", false, false}, {"0", false, false}, {nil, false, false}} {
+		zero, ok := (&Homework{AnswerCards: c.v}).AnswerCardsZero()
+		if zero != c.zero || ok != c.ok {
+			t.Errorf("%#v: zero=%v ok=%v", c.v, zero, ok)
+		}
+	}
+}

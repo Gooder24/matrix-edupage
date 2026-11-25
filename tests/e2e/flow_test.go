@@ -138,6 +138,14 @@ func TestBridge(t *testing.T) {
 		if str(signed, "content", "m.relates_to", "m.in_reply_to", "event_id") != form["event_id"] {
 			t.Errorf("the early reply does not answer its thread: %v", signed["content"])
 		}
+		var chainRoom, lastRoom string
+		until(wait, func() bool {
+			chainRoom, lastRoom = c.roomWhere(isBody("Chain start")), c.roomWhere(isBody("Chain link 5"))
+			return chainRoom != "" && lastRoom != ""
+		})
+		if chainRoom == "" || lastRoom != chainRoom {
+			t.Errorf("a long chain of early replies left its thread's room: %q %q", chainRoom, lastRoom)
+		}
 		var phone map[string]any
 		until(wait, func() bool { phone = c.find(dm, isBody("Sent from the phone")); return phone != nil })
 		if phone == nil || phone["sender"] != ghost(fakeedupage.Me) {

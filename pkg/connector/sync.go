@@ -23,8 +23,6 @@ const (
 	materialDays = 14
 	// Optional notices are about today; turning them on does not replay the whole school year.
 	optionalMaxAge = 24 * time.Hour
-	// The first read after signing in repeats until it finds nothing new, at most this many times.
-	backfillReads = 4
 )
 
 func (ec *EduPageClient) pollLoop(ctx context.Context) {
@@ -100,17 +98,19 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		return err
 	}
 	// The first sign-in reads the whole range again until a read finds nothing new: events are
-	// queued, not yet in Matrix, and a restart before they land must not skip them.
-	// A message bridgev2 refuses would be queued again on every read, so the repeats are capped.
-	m := ec.meta()
-	m.mu.Lock()
-	if backfill {
-		m.Reads++
+	// queued, not yet in Matrix, and a restart before they land must not skip them. What the last
+	// read queued too has not landed in five minutes: bridgev2 refused it, and it does not hold this up.
+	again := true
+	for _, id := range append(queued, noticesQueued...) {
+		again = again && ec.lastQueued[id]
 	}
-	reads := m.Reads
-	m.mu.Unlock()
-	done := backfill && ((queued+noticesQueued == 0 && waiting.IsZero()) || reads >= backfillReads)
+	ec.lastQueued = map[int64]bool{}
+	for _, id := range append(queued, noticesQueued...) {
+		ec.lastQueued[id] = true
+	}
+	done := backfill && again
 	if backfill || !waiting.Equal(pending) {
+		m := ec.meta()
 		m.mu.Lock()
 		m.Backfilled = m.Backfilled || done
 		m.Pending = 0
@@ -181,7 +181,7 @@ func (ec *EduPageClient) known(ctx context.Context, id int64) (*threadInfo, bool
 
 // queueMessages bridges new messages oldest first; a reply waits for its thread's first message, also
 // when EduPage dates the reply earlier. It returns where each message went and how many were queued.
-func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item, backfill bool) (map[int64]*threadInfo, int) {
+func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item, backfill bool) (map[int64]*threadInfo, []int64) {
 	m := ec.meta()
 	m.mu.Lock()
 	userID, school := m.UserID, m.School
@@ -195,20 +195,25 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 	seen := map[int64]*threadInfo{}
 	settle := map[networkid.PortalKey]networkid.MessageID{}
 	settleBefore := time.Now().AddDate(0, 0, -ec.Main.Config.SettleDays)
-	queued := 0
-	var bridge func(it *edupage.Item, depth int)
-	bridge = func(it *edupage.Item, depth int) {
+	var queued []int64
+	visiting := map[int64]bool{}
+	var bridge func(it *edupage.Item)
+	bridge = func(it *edupage.Item) {
 		id := it.ID.Int()
-		if _, ok := seen[id]; ok {
+		if _, ok := seen[id]; ok || visiting[id] {
 			return
 		}
 		if info, ok := ec.known(ctx, id); ok {
 			seen[id] = info
 			return
 		}
+		visiting[id] = true
 		parent := it.ReplyTo.Int()
-		if p, ok := batch[parent]; ok && parent != id && depth < 4 {
-			bridge(p, depth+1)
+		if p, ok := batch[parent]; ok {
+			bridge(p) // the thread's first message goes first, however EduPage dated it
+		}
+		if _, ok := seen[id]; ok {
+			return
 		}
 		_, parentKnown := seen[parent]
 		if !parentKnown {
@@ -231,15 +236,16 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 			info.portal = ec.portalKey(ec.counterpart(it, userID))
 		}
 		seen[id] = info
+		ec.ensureRoom(ctx, info.portal)
 		ec.queueMessage(it, info, school, userID)
-		queued++
+		queued = append(queued, id)
 		if backfill && it.Time().Before(settleBefore) {
 			settle[info.portal] = makeMessageID(id)
 		}
 	}
 	for i := range items {
 		if it := batch[items[i].ID.Int()]; it == &items[i] {
-			bridge(it, 0)
+			bridge(it)
 		}
 	}
 	// History shows up like on edupage.org: there, but already read.
@@ -335,7 +341,7 @@ func (ec *EduPageClient) readMaterials(ctx context.Context, items []edupage.Item
 
 // queueNotices bridges new and changed notices. It returns the oldest notice that has to wait (for its
 // material or the message it confirms), so later polls read back far enough, and how many it queued.
-func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item, seen map[int64]*threadInfo) (waiting time.Time, queued int, err error) {
+func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item, seen map[int64]*threadInfo) (waiting time.Time, queued []int64, err error) {
 	// Only for two weeks: a confirmation of a message that never comes must not stretch every poll.
 	wait := func(it *edupage.Item) {
 		if t := it.Time(); time.Since(t) < materialDays*24*time.Hour && (waiting.IsZero() || t.Before(waiting)) {
@@ -395,12 +401,14 @@ func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item,
 		if err != nil {
 			return waiting, queued, err
 		}
-		queued++
 		base := simplevent.EventMeta{PortalKey: portal, Sender: sender, Timestamp: it.Time(), StreamOrder: id}
 		if len(existing) > 0 {
 			if noticeUpToDate(existing, n.sig) {
-				queued--
 				continue
+			}
+			queued = append(queued, id)
+			if len(n.files) > 0 {
+				wait(it) // its files are tried again on the next poll
 			}
 			base.Type, base.Timestamp = bridgev2.RemoteEventEdit, time.Now()
 			ec.UserLogin.QueueRemoteEvent(&simplevent.Message[*notice]{
@@ -409,6 +417,11 @@ func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item,
 			})
 			continue
 		}
+		queued = append(queued, id)
+		if len(n.files) > 0 {
+			wait(it) // a file that fails is tried again on the next poll, also for an old notice
+		}
+		ec.ensureRoom(ctx, portal)
 		base.Type, base.CreatePortal = bridgev2.RemoteEventMessage, true
 		ec.UserLogin.QueueRemoteEvent(&simplevent.Message[*notice]{
 			EventMeta: base, ID: makeMessageID(id), Data: n,

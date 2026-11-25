@@ -23,7 +23,6 @@ type UserLoginMetadata struct {
 	Session    string `json:"session"`
 	UserID     string `json:"user_id"`
 	Backfilled bool   `json:"backfilled"`
-	Reads      int    `json:"reads,omitempty"` // whole reads of the first sign-in so far
 	// Pending is when the oldest notice still waiting was posted (Unix seconds), so polls read back to it.
 	Pending int64 `json:"pending,omitempty"`
 	// Homework material already read, by the homework's superid.

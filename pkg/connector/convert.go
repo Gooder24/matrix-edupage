@@ -339,6 +339,10 @@ func (ec *EduPageClient) convertNoticeEdit(ctx context.Context, _ *bridgev2.Port
 		if _, err := fmt.Sscanf(string(p.PartID), "file-%d", &i); err != nil || !pm.Failed || i >= len(n.files) {
 			continue
 		}
+		if meta.Tries >= fileTries {
+			stillFailed = true // a change of the text alone does not download a broken file again
+			continue
+		}
 		part, failed := ec.homeworkFile(ctx, intent, n.files[i], n.base)
 		if failed {
 			stillFailed = true
@@ -350,7 +354,7 @@ func (ec *EduPageClient) convertNoticeEdit(ctx context.Context, _ *bridgev2.Port
 	// The text part is always edited too: bridgev2 saves the metadata only of the parts it edits.
 	if stillFailed {
 		meta.Sig = n.sig + retrySuffix
-		meta.Tries++
+		meta.Tries = min(meta.Tries+1, fileTries)
 	} else {
 		meta.Sig, meta.Tries = n.sig, 0
 	}
