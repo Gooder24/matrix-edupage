@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Gooder24/matrix-edupage/internal/fakeedupage"
+	"github.com/Gooder24/matrix-edupage/pkg/edupage"
 )
 
 const wait = 30 * time.Second
@@ -243,6 +245,26 @@ func TestBridge(t *testing.T) {
 		})
 		if fixed == nil {
 			t.Error("the homework file never came after its download failed once")
+		}
+	})
+
+	// The first read is the school year; then the reads come back to the newest week as soon as
+	// everything is in Matrix, also while new messages keep coming. A refused chat holds nothing back.
+	t.Run("reads back only as far as needed", func(t *testing.T) {
+		for i := 0; i < 4; i++ {
+			text := fmt.Sprintf("Keep coming %d", i)
+			fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": text})
+			if !until(wait, func() bool { return c.find(dm, isBody(text)) != nil }) {
+				t.Fatalf("%q never came", text)
+			}
+		}
+		dates := fake.Dates()
+		week := time.Now().In(edupage.Location).AddDate(0, 0, -14).Format(time.DateOnly)
+		if last := dates[len(dates)-1]; last < week {
+			t.Errorf("polls still read back to %s (all reads: %v)", last, dates)
+		}
+		if room := c.roomWhere(isBody("From a filtered chat")); room != "" {
+			t.Error("the portal create filter was bypassed")
 		}
 	})
 

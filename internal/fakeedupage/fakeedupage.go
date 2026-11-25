@@ -29,6 +29,7 @@ const (
 	Cyril    = "Ucitel12"
 	Dora     = "Ucitel13" // left the school
 	Eva      = "Ucitel14" // no messages yet
+	Fiona    = "Ucitel15" // her chat is refused by the bridge's portal create filter
 	Class    = "Trieda7"
 	Code     = "246810" // the mailed second-factor code
 )
@@ -52,6 +53,7 @@ type Server struct {
 	homeworks   []map[string]any
 	materials   map[string]any
 	files       map[string][]byte
+	dates       []string
 	sessions    map[string]bool
 	log         []Entry
 	twoFactor   bool
@@ -95,6 +97,8 @@ func New() *Server {
 	}
 	s.add(map[string]any{"typ": "sprava", "vlastnik": "Only" + Me, "vlastnik_meno": "Alex Pupil", "user": Bea, "user_meno": "Bea Teacher",
 		"text": "Sent from the phone", "cas_pridania": stamp(now.Add(-25 * time.Minute))})
+	s.add(map[string]any{"typ": "sprava", "vlastnik": Fiona, "vlastnik_meno": "Fiona Teacher", "user": Me,
+		"text": "From a filtered chat", "cas_pridania": stamp(now.AddDate(0, 0, -20))})
 	s.Grade = s.add(map[string]any{"typ": "znamka", "vlastnik": Bea, "vlastnik_meno": "Bea Teacher", "text": "Mathematics: 1",
 		"cas_pridania": stamp(now.Add(-50 * time.Minute))})
 	s.files["/files/card.png"] = PNG
@@ -138,6 +142,13 @@ func (s *Server) Add(item map[string]any) int {
 		item["cas_pridania"] = stamp(time.Now())
 	}
 	return s.add(item)
+}
+
+// Dates are the datefrom of every timeline read, oldest first.
+func (s *Server) Dates() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.dates...)
 }
 
 // Update changes fields of an item, the way EduPage changes a notice.
@@ -412,6 +423,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 func (s *Server) timeline(w http.ResponseWriter, r *http.Request, q url.Values) {
 	_ = r.ParseForm()
 	since := r.PostForm.Get("datefrom")
+	s.dates = append(s.dates, since)
 	messages := false
 	for _, tab := range q["filterTab"] {
 		messages = messages || tab == "messages"

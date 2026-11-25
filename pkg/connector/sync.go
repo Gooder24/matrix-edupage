@@ -62,16 +62,16 @@ func schoolYearStart(today time.Time) time.Time {
 
 func (ec *EduPageClient) poll(ctx context.Context) error {
 	cfg := ec.Main.Config
-	backfill, pending := ec.meta().progress()
+	backfilled, pending := ec.meta().progress()
 	today := time.Now().In(edupage.Location)
 	since := today.AddDate(0, 0, -cfg.RecentDays)
-	if backfill {
+	if !backfilled {
 		since = schoolYearStart(today)
 		if cfg.InitialDays > 0 {
 			since = today.AddDate(0, 0, -cfg.InitialDays)
 		}
 	} else if !pending.IsZero() && pending.Before(since) {
-		since = pending // a notice still waits for its material or the message it confirms
+		since = pending // something is not in Matrix yet, or a notice waits
 	}
 	var items []edupage.Item
 	var edu *edupage.Client
@@ -92,35 +92,71 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		return items[i].ID.Int() < items[j].ID.Int()
 	})
 	ec.readMaterials(ctx, items)
-	seen, queued := ec.queueMessages(ctx, items, backfill)
-	waiting, noticesQueued, err := ec.queueNotices(ctx, items, seen)
+	if ec.tries == nil {
+		ec.tries = map[int64]int{}
+	}
+	var back horizon
+	seen, err := ec.queueMessages(ctx, items, &back)
 	if err != nil {
 		return err
 	}
-	// The first sign-in reads the whole range again until a read finds nothing new: events are
-	// queued, not yet in Matrix, and a restart before they land must not skip them. What the last
-	// read queued too has not landed in five minutes: bridgev2 refused it, and it does not hold this up.
-	again := true
-	for _, id := range append(queued, noticesQueued...) {
-		again = again && ec.lastQueued[id]
+	if err = ec.queueNotices(ctx, items, seen, &back); err != nil {
+		return err
 	}
-	ec.lastQueued = map[int64]bool{}
-	for _, id := range append(queued, noticesQueued...) {
-		ec.lastQueued[id] = true
-	}
-	done := backfill && again
-	if backfill || !waiting.Equal(pending) {
+	if !backfilled || !back.t.Equal(pending) {
 		m := ec.meta()
 		m.mu.Lock()
-		m.Backfilled = m.Backfilled || done
-		m.Pending = 0
-		if !waiting.IsZero() {
-			m.Pending = waiting.Unix()
+		m.Backfilled, m.Pending = true, 0
+		if !back.t.IsZero() {
+			m.Pending = back.t.Unix()
 		}
 		m.mu.Unlock()
 		return ec.save(ctx)
 	}
 	return nil
+}
+
+// horizon is how far back the next poll reads: to the oldest item that is not in Matrix yet (events are
+// queued, not delivered, and a restart before they land must not skip them) or that still waits.
+type horizon struct{ t time.Time }
+
+func (h *horizon) hold(t time.Time) {
+	if h.t.IsZero() || t.Before(h.t) {
+		h.t = t
+	}
+}
+
+// maxTries: an item that is still not in Matrix after this many polls (bridgev2 or the homeserver
+// refuses it) no longer holds the reads back, and is not queued again until the bridge restarts.
+const maxTries = 3
+
+// undelivered counts another poll that found the item not in Matrix; false once it gave up.
+func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) bool {
+	id := it.ID.Int()
+	ec.tries[id]++
+	if ec.tries[id] > maxTries {
+		return false
+	}
+	back.hold(it.Time())
+	return true
+}
+
+// room makes sure the portal's room exists before an item is queued into it. ok is false when the item
+// is not queued now: the filter does not want the chat (nothing waits), or the homeserver refused the
+// room (the item waits like one not delivered). A homeserver that does not answer ends the poll.
+func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back *horizon, it *edupage.Item) (ok bool, err error) {
+	switch err = ec.ensureRoom(ctx, key); {
+	case err == nil:
+		return ec.undelivered(back, it), nil
+	case errors.Is(err, errFiltered):
+		return false, nil
+	case errors.Is(err, errTransient):
+		return false, err
+	default:
+		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver refused a room; the next poll tries again")
+		ec.undelivered(back, it)
+		return false, nil
+	}
 }
 
 // setTeachers replaces the people the user can start a message to; one who left is gone at once.
@@ -180,8 +216,8 @@ func (ec *EduPageClient) known(ctx context.Context, id int64) (*threadInfo, bool
 }
 
 // queueMessages bridges new messages oldest first; a reply waits for its thread's first message, also
-// when EduPage dates the reply earlier. It returns where each message went and how many were queued.
-func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item, backfill bool) (map[int64]*threadInfo, []int64) {
+// when EduPage dates the reply earlier. It returns where each message went.
+func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item, back *horizon) (map[int64]*threadInfo, error) {
 	m := ec.meta()
 	m.mu.Lock()
 	userID, school := m.UserID, m.School
@@ -195,16 +231,17 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 	seen := map[int64]*threadInfo{}
 	settle := map[networkid.PortalKey]networkid.MessageID{}
 	settleBefore := time.Now().AddDate(0, 0, -ec.Main.Config.SettleDays)
-	var queued []int64
 	visiting := map[int64]bool{}
+	var failed error
 	var bridge func(it *edupage.Item)
 	bridge = func(it *edupage.Item) {
 		id := it.ID.Int()
-		if _, ok := seen[id]; ok || visiting[id] {
+		if _, ok := seen[id]; ok || visiting[id] || failed != nil {
 			return
 		}
 		if info, ok := ec.known(ctx, id); ok {
 			seen[id] = info
+			delete(ec.tries, id)
 			return
 		}
 		visiting[id] = true
@@ -212,7 +249,7 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 		if p, ok := batch[parent]; ok {
 			bridge(p) // the thread's first message goes first, however EduPage dated it
 		}
-		if _, ok := seen[id]; ok {
+		if _, ok := seen[id]; ok || failed != nil {
 			return
 		}
 		_, parentKnown := seen[parent]
@@ -236,10 +273,15 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 			info.portal = ec.portalKey(ec.counterpart(it, userID))
 		}
 		seen[id] = info
-		ec.ensureRoom(ctx, info.portal)
+		ok, err := ec.room(ctx, info.portal, back, it)
+		if err != nil {
+			failed = err
+			return
+		} else if !ok {
+			return
+		}
 		ec.queueMessage(it, info, school, userID)
-		queued = append(queued, id)
-		if backfill && it.Time().Before(settleBefore) {
+		if it.Time().Before(settleBefore) {
 			settle[info.portal] = makeMessageID(id)
 		}
 	}
@@ -248,6 +290,9 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 			bridge(it)
 		}
 	}
+	if failed != nil {
+		return nil, failed
+	}
 	// History shows up like on edupage.org: there, but already read.
 	for portal, last := range settle {
 		ec.UserLogin.QueueRemoteEvent(&simplevent.Receipt{
@@ -255,7 +300,7 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 			LastTarget: last,
 		})
 	}
-	return seen, queued
+	return seen, nil
 }
 
 func (ec *EduPageClient) queueMessage(it *edupage.Item, info *threadInfo, school, userID string) {
@@ -267,12 +312,11 @@ func (ec *EduPageClient) queueMessage(it *edupage.Item, info *threadInfo, school
 	}
 	ec.UserLogin.QueueRemoteEvent(&simplevent.Message[*edupage.Item]{
 		EventMeta: simplevent.EventMeta{
-			Type:         bridgev2.RemoteEventMessage,
-			PortalKey:    info.portal,
-			CreatePortal: true,
-			Sender:       sender,
-			Timestamp:    it.Time(),
-			StreamOrder:  id,
+			Type:        bridgev2.RemoteEventMessage,
+			PortalKey:   info.portal,
+			Sender:      sender,
+			Timestamp:   it.Time(),
+			StreamOrder: id,
 		},
 		ID:   makeMessageID(id),
 		Data: &item,
@@ -339,13 +383,13 @@ func (ec *EduPageClient) readMaterials(ctx context.Context, items []edupage.Item
 	}
 }
 
-// queueNotices bridges new and changed notices. It returns the oldest notice that has to wait (for its
-// material or the message it confirms), so later polls read back far enough, and how many it queued.
-func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item, seen map[int64]*threadInfo) (waiting time.Time, queued []int64, err error) {
+// queueNotices bridges new and changed notices. A notice that has to wait (for its material, the
+// message it confirms or a file) holds the reads back, so later polls read back far enough.
+func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item, seen map[int64]*threadInfo, back *horizon) error {
 	// Only for two weeks: a confirmation of a message that never comes must not stretch every poll.
 	wait := func(it *edupage.Item) {
-		if t := it.Time(); time.Since(t) < materialDays*24*time.Hour && (waiting.IsZero() || t.Before(waiting)) {
-			waiting = t
+		if t := it.Time(); time.Since(t) < materialDays*24*time.Hour {
+			back.hold(t)
 		}
 	}
 	m := ec.meta()
@@ -399,14 +443,14 @@ func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item,
 		id := it.ID.Int()
 		existing, err := ec.Main.Bridge.DB.Message.GetAllPartsByID(ctx, ec.UserLogin.ID, makeMessageID(id))
 		if err != nil {
-			return waiting, queued, err
+			return err
 		}
 		base := simplevent.EventMeta{PortalKey: portal, Sender: sender, Timestamp: it.Time(), StreamOrder: id}
 		if len(existing) > 0 {
+			delete(ec.tries, id)
 			if noticeUpToDate(existing, n.sig) {
 				continue
 			}
-			queued = append(queued, id)
 			if len(n.files) > 0 {
 				wait(it) // its files are tried again on the next poll
 			}
@@ -417,12 +461,15 @@ func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item,
 			})
 			continue
 		}
-		queued = append(queued, id)
+		if ok, err := ec.room(ctx, portal, back, it); err != nil {
+			return err
+		} else if !ok {
+			continue
+		}
 		if len(n.files) > 0 {
 			wait(it) // a file that fails is tried again on the next poll, also for an old notice
 		}
-		ec.ensureRoom(ctx, portal)
-		base.Type, base.CreatePortal = bridgev2.RemoteEventMessage, true
+		base.Type = bridgev2.RemoteEventMessage
 		ec.UserLogin.QueueRemoteEvent(&simplevent.Message[*notice]{
 			EventMeta: base, ID: makeMessageID(id), Data: n,
 			ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, n *notice) (*bridgev2.ConvertedMessage, error) {
@@ -430,5 +477,5 @@ func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item,
 			},
 		})
 	}
-	return waiting, queued, nil
+	return nil
 }

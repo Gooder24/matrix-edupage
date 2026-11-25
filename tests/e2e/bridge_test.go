@@ -171,6 +171,9 @@ appservice_dir = "%s"
     max_file_size: 26214400
 bridge:
     personal_filtering_spaces: false
+    portal_create_filter:
+        mode: deny
+        list: ["p:ucitel15"]
     permissions:
         "%s": admin
 matrix:

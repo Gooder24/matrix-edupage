@@ -9,13 +9,12 @@ import (
 	"time"
 
 	"go.mau.fi/util/ptr"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
-
-	"github.com/rs/zerolog"
 
 	"github.com/Gooder24/matrix-edupage/pkg/edupage"
 )
@@ -35,9 +34,10 @@ type EduPageClient struct {
 	names    sync.Map // ghost ID → name seen on EduPage
 	groups   sync.Map // group portal ID → name
 	teachers sync.Map // ghost ID → edupage.Contact, the people the user can start a message to
-	// lastQueued: what the poll before queued, by EduPage ID; only the poll goroutine touches it.
-	lastQueued map[int64]bool
-	saveMu     sync.Mutex
+	// tries: how many polls found an item still not in Matrix, by EduPage ID; only the poll goroutine
+	// touches it.
+	tries  map[int64]int
+	saveMu sync.Mutex
 }
 
 var (
@@ -267,19 +267,35 @@ func (ec *EduPageClient) GetCapabilities(_ context.Context, portal *bridgev2.Por
 	return roomFeatures(ec.Main.Config.MaxFileSize)
 }
 
+// errFiltered: bridge.portal_create_filter does not want this chat.
+var errFiltered = errors.New("the portal create filter refuses this chat")
+
 // ensureRoom makes a portal's Matrix room now, one after another from the poll. Left to bridgev2, rooms
 // of several portals are made at once, and Tuwunel gives two rooms the bot creates in the same
-// millisecond the same ID (room version 12 names a room by its create event).
-func (ec *EduPageClient) ensureRoom(ctx context.Context, key networkid.PortalKey) {
+// millisecond the same ID (room version 12 names a room by its create event). A refusal by the
+// homeserver comes back as is; a homeserver that does not answer is a transient error that ends the poll.
+func (ec *EduPageClient) ensureRoom(ctx context.Context, key networkid.PortalKey) error {
 	portal, err := ec.Main.Bridge.GetPortalByKey(ctx, key)
-	if err != nil || portal.MXID != "" {
-		return
+	if err != nil {
+		return err
+	} else if portal.MXID != "" {
+		return nil
+	} else if !ec.Main.Bridge.Config.PortalCreateFilter.ShouldAllow(ec.UserLogin.ID, key) {
+		return errFiltered
 	}
+	ctx, cancel := context.WithTimeout(ctx, roomTimeout)
+	defer cancel()
 	info, err := ec.GetChatInfo(ctx, portal)
 	if err == nil {
 		err = portal.CreateMatrixRoom(ctx, ec.UserLogin, info)
 	}
-	if err != nil {
-		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("Failed to make a room; the next event tries again")
+	var httpErr mautrix.HTTPError
+	if err != nil && !(errors.As(err, &httpErr) && httpErr.Response != nil && httpErr.Response.StatusCode < 500) {
+		return fmt.Errorf("%w: %w", errTransient, err)
 	}
+	return err
 }
+
+const roomTimeout = 30 * time.Second
+
+var errTransient = errors.New("the homeserver did not make a room")

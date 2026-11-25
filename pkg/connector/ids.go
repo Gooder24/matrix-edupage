@@ -16,15 +16,16 @@ import (
 // renewed without the user; EduPage has no tokens. Every access holds mu (the poller and bridgev2's
 // own saves run in different goroutines), and so does marshalling.
 type UserLoginMetadata struct {
-	mu         sync.Mutex
-	School     string `json:"school"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	Session    string `json:"session"`
-	UserID     string `json:"user_id"`
-	Backfilled bool   `json:"backfilled"`
-	// Pending is when the oldest notice still waiting was posted (Unix seconds), so polls read back to it.
-	Pending int64 `json:"pending,omitempty"`
+	mu       sync.Mutex
+	School   string `json:"school"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Session  string `json:"session"`
+	UserID   string `json:"user_id"`
+	// Backfilled: the first read (the school year) was made. Pending is when the oldest item not yet in
+	// Matrix, or a notice still waiting, was posted (Unix seconds), so later polls read back to it.
+	Backfilled bool  `json:"backfilled"`
+	Pending    int64 `json:"pending,omitempty"`
 	// Homework material already read, by the homework's superid.
 	Materials map[string]*MaterialMeta `json:"materials,omitempty"`
 }
