@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -67,6 +69,8 @@ type env struct {
 	pid      int
 	// roomsDown makes the homeserver answer the bridge's createRoom with 500, as if it were down.
 	roomsDown *atomic.Bool
+	// failing makes createRoom answer 500 for one chat: a lower-case EduPage id → *atomic.Int32 of tries.
+	failing *sync.Map
 }
 
 func (e *env) provision(method, path string, body any, out any) error {
@@ -161,14 +165,26 @@ appservice_dir = "%s"
 	}
 
 	// The bridge talks to the homeserver through a proxy that can refuse to make rooms.
-	roomsDown := &atomic.Bool{}
+	roomsDown, failing := &atomic.Bool{}, &sync.Map{}
 	target, _ := url.Parse(hsURL)
 	rp := httputil.NewSingleHostReverseProxy(target)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if roomsDown.Load() && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/createRoom") {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"down for the test"}`))
-			return
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/createRoom") {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			down := roomsDown.Load()
+			failing.Range(func(id, tries any) bool {
+				if strings.Contains(strings.ToLower(string(body)), id.(string)) {
+					tries.(*atomic.Int32).Add(1)
+					down = true
+				}
+				return true
+			})
+			if down {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"down for the test"}`))
+				return
+			}
 		}
 		rp.ServeHTTP(w, r)
 	}))
@@ -245,7 +261,7 @@ logging:
 			t.Logf("bridge log (last 60 lines):\n%s", strings.Join(lines[max(0, len(lines)-60):], "\n"))
 		}
 	})
-	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
+	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, failing: failing, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
 	if !until(30*time.Second, func() bool { return e.provision("GET", "/v3/whoami", nil, nil) == nil }) {
 		t.Fatal("bridge did not start")
 	}

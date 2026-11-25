@@ -152,8 +152,9 @@ func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) {
 // poll makes no new rooms; items in rooms that exist go on, and the waiting ones hold the reads back
 // until a room can be made again.
 func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back *horizon, it *edupage.Item) bool {
-	if ec.failedNow[key] {
-		ec.undelivered(back, it) // its room already failed in this poll; one try a poll is enough
+	if ec.failedNow[key] || (ec.slowNow > 1 && ec.roomFails[key] >= maxTries) {
+		// Its room already failed in this poll, or two chats that keep failing did: one try a poll is enough.
+		ec.undelivered(back, it)
 		return false
 	}
 	err := ec.ensureRoom(ctx, key)
@@ -170,12 +171,12 @@ func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back
 		back.hold(it.Time())
 		return false
 	case errors.Is(err, errTransient):
-		// One chat whose room keeps failing stops holding back the others after a few polls; a second
-		// chat failing in the same poll means the homeserver is down, and the poll makes no more rooms.
+		// A chat whose room keeps failing stops holding back the others after a few polls. Once two such
+		// chats failed in a poll, the others like them wait for the next poll; a new chat still tries once,
+		// and its failure (a homeserver that is down) stops the rooms of this poll.
 		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver keeps not making this room")
 		ec.failedNow[key] = true
 		ec.slowNow++
-		ec.roomsDown = ec.slowNow > 1
 	case err == nil:
 		delete(ec.roomFails, key)
 	default:

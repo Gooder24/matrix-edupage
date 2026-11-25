@@ -43,7 +43,7 @@ type EduPageClient struct {
 	roomFails map[networkid.PortalKey]int
 	// failedNow: portals whose room failed in this poll; their other items do not try again.
 	failedNow map[networkid.PortalKey]bool
-	// slowNow: chats past the cap whose room got no answer in this poll; a second one stops the rooms.
+	// slowNow: chats past the cap whose room got no answer in this poll; after two, the others past the cap wait.
 	slowNow int
 	saveMu  sync.Mutex
 }

@@ -31,6 +31,9 @@ const (
 	Eva      = "Ucitel14" // no messages yet
 	Fiona    = "Ucitel15" // her chat is refused by the bridge's portal create filter
 	Gita     = "Ucitel16" // writes first while the homeserver makes no rooms
+	Hana     = "Ucitel17" // her room keeps failing
+	Ivo      = "Ucitel18" // his room keeps failing too
+	Jana     = "Ucitel19" // writes first while Hana's and Ivo's rooms keep failing
 	Class    = "Trieda7"
 	Code     = "246810" // the mailed second-factor code
 )

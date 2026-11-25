@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -283,6 +284,34 @@ func TestBridge(t *testing.T) {
 		e.roomsDown.Store(false)
 		if !until(time.Minute, func() bool { return c.roomWhere(isBody("A first message from Gita")) != "" }) {
 			t.Error("the waiting message never came once rooms could be made again")
+		}
+	})
+
+	// Two chats whose rooms keep failing do not keep a new chat from getting its room.
+	t.Run("two chats that keep failing", func(t *testing.T) {
+		hana, ivo := &atomic.Int32{}, &atomic.Int32{}
+		e.failing.Store(strings.ToLower(fakeedupage.Hana), hana)
+		e.failing.Store(strings.ToLower(fakeedupage.Ivo), ivo)
+		for who, name := range map[string]string{fakeedupage.Hana: "Hana", fakeedupage.Ivo: "Ivo"} {
+			fake.Add(map[string]any{"typ": "sprava", "vlastnik": who, "vlastnik_meno": name + " Teacher", "user": fakeedupage.Me,
+				"text": "A first message from " + name})
+		}
+		// Past the cap of 12 polls both are tried once a poll, and two of them failing used to stop all new rooms.
+		if !until(2*time.Minute, func() bool { return hana.Load() > 14 && ivo.Load() > 14 }) {
+			t.Fatalf("the failing rooms were tried %d and %d times", hana.Load(), ivo.Load())
+		}
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Jana, "vlastnik_meno": "Jana Teacher", "user": fakeedupage.Me,
+			"text": "A first message from Jana"})
+		if !until(30*time.Second, func() bool { return c.roomWhere(isBody("A first message from Jana")) != "" }) {
+			t.Error("a new chat got no room while two others kept failing")
+		}
+		e.failing.Delete(strings.ToLower(fakeedupage.Hana))
+		e.failing.Delete(strings.ToLower(fakeedupage.Ivo))
+		for _, name := range []string{"Hana", "Ivo"} {
+			text := "A first message from " + name
+			if !until(time.Minute, func() bool { return c.roomWhere(isBody(text)) != "" }) {
+				t.Errorf("%q never came once its room could be made", text)
+			}
 		}
 	})
 
