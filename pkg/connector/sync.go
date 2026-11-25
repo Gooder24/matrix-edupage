@@ -93,7 +93,7 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		return items[i].ID.Int() < items[j].ID.Int()
 	})
 	ec.readMaterials(ctx, items)
-	ec.roomsDown = false
+	ec.roomsDown, ec.failedNow = false, map[networkid.PortalKey]bool{}
 	if ec.tries == nil {
 		ec.tries, ec.roomFails = map[int64]int{}, map[networkid.PortalKey]int{}
 	}
@@ -152,6 +152,10 @@ func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) {
 // poll makes no new rooms; items in rooms that exist go on, and the waiting ones hold the reads back
 // until a room can be made again.
 func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back *horizon, it *edupage.Item) bool {
+	if ec.failedNow[key] {
+		ec.undelivered(back, it) // its room already failed in this poll; one try a poll is enough
+		return false
+	}
 	err := ec.ensureRoom(ctx, key)
 	switch {
 	case errors.Is(err, errFiltered):
@@ -160,16 +164,20 @@ func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back
 		back.hold(it.Time())
 		return false
 	case errors.Is(err, errTransient) && ec.roomFails[key] < maxTries:
-		// One chat whose room keeps failing stops holding back the others after a few polls.
 		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("No new rooms in this poll")
 		ec.roomFails[key]++
 		ec.roomsDown = true
 		back.hold(it.Time())
 		return false
+	case errors.Is(err, errTransient):
+		// One chat whose room keeps failing stops holding back the others after a few polls.
+		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver keeps not making this room")
+		ec.failedNow[key] = true
 	case err == nil:
 		delete(ec.roomFails, key)
 	default:
 		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver refused a room; the next poll tries again")
+		ec.failedNow[key] = true
 	}
 	ec.undelivered(back, it)
 	return err == nil
