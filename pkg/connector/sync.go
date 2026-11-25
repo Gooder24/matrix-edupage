@@ -93,7 +93,7 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		return items[i].ID.Int() < items[j].ID.Int()
 	})
 	ec.readMaterials(ctx, items)
-	ec.roomsDown, ec.failedNow = false, map[networkid.PortalKey]bool{}
+	ec.roomsDown, ec.failedNow, ec.slowNow = false, map[networkid.PortalKey]bool{}, 0
 	if ec.tries == nil {
 		ec.tries, ec.roomFails = map[int64]int{}, map[networkid.PortalKey]int{}
 	}
@@ -170,9 +170,12 @@ func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back
 		back.hold(it.Time())
 		return false
 	case errors.Is(err, errTransient):
-		// One chat whose room keeps failing stops holding back the others after a few polls.
+		// One chat whose room keeps failing stops holding back the others after a few polls; a second
+		// chat failing in the same poll means the homeserver is down, and the poll makes no more rooms.
 		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver keeps not making this room")
 		ec.failedNow[key] = true
+		ec.slowNow++
+		ec.roomsDown = ec.slowNow > 1
 	case err == nil:
 		delete(ec.roomFails, key)
 	default:
