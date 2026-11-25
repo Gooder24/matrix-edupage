@@ -36,8 +36,10 @@ type EduPageClient struct {
 	teachers sync.Map // ghost ID → edupage.Contact, the people the user can start a message to
 	// tries: how many polls found an item still not in Matrix, by EduPage ID; only the poll goroutine
 	// touches it.
-	tries  map[int64]int
-	saveMu sync.Mutex
+	tries map[int64]int
+	// roomsDown: the homeserver did not make a room in this poll, so the poll makes no more.
+	roomsDown bool
+	saveMu    sync.Mutex
 }
 
 var (
@@ -282,6 +284,8 @@ func (ec *EduPageClient) ensureRoom(ctx context.Context, key networkid.PortalKey
 		return nil
 	} else if !ec.Main.Bridge.Config.PortalCreateFilter.ShouldAllow(ec.UserLogin.ID, key) {
 		return errFiltered
+	} else if ec.roomsDown {
+		return errTransient
 	}
 	ctx, cancel := context.WithTimeout(ctx, roomTimeout)
 	defer cancel()

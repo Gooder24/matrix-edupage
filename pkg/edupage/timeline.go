@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // the school's time zone also where the system has no tzdata
 )
 
 // Str is a value EduPage sends as a string, a number or null.

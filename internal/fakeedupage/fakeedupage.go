@@ -30,6 +30,7 @@ const (
 	Dora     = "Ucitel13" // left the school
 	Eva      = "Ucitel14" // no messages yet
 	Fiona    = "Ucitel15" // her chat is refused by the bridge's portal create filter
+	Gita     = "Ucitel16" // writes first while the homeserver makes no rooms
 	Class    = "Trieda7"
 	Code     = "246810" // the mailed second-factor code
 )

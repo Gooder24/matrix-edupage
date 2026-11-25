@@ -12,11 +12,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,6 +65,8 @@ type env struct {
 	prov     string
 	provAuth string
 	pid      int
+	// roomsDown makes the homeserver answer the bridge's createRoom with 500, as if it were down.
+	roomsDown *atomic.Bool
 }
 
 func (e *env) provision(method, path string, body any, out any) error {
@@ -155,6 +160,20 @@ appservice_dir = "%s"
 		t.Fatal("Tuwunel did not start")
 	}
 
+	// The bridge talks to the homeserver through a proxy that can refuse to make rooms.
+	roomsDown := &atomic.Bool{}
+	target, _ := url.Parse(hsURL)
+	rp := httputil.NewSingleHostReverseProxy(target)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if roomsDown.Load() && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/createRoom") {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"down for the test"}`))
+			return
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	t.Cleanup(proxy.Close)
+
 	c := &mx{t: t, base: hsURL, events: map[string][]map[string]any{}, stop: make(chan struct{})}
 	c.register("alex", regToken)
 	go c.syncLoop()
@@ -201,7 +220,7 @@ logging:
     writers:
     - type: stdout
       format: pretty
-`, fake.Template(), poll, c.userID, filepath.Join(dir, "bridge.db"), hsURL, server, brPort, brPort, asToken, hsToken, provSecret)
+`, fake.Template(), poll, c.userID, filepath.Join(dir, "bridge.db"), proxy.URL, server, brPort, brPort, asToken, hsToken, provSecret)
 	must(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o600))
 	brLogPath := filepath.Join(dir, "bridge.log")
 	brLog, _ := os.Create(brLogPath)
@@ -226,7 +245,7 @@ logging:
 			t.Logf("bridge log (last 60 lines):\n%s", strings.Join(lines[max(0, len(lines)-60):], "\n"))
 		}
 	})
-	e := &env{t: t, fake: fake, c: c, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
+	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
 	if !until(30*time.Second, func() bool { return e.provision("GET", "/v3/whoami", nil, nil) == nil }) {
 		t.Fatal("bridge did not start")
 	}

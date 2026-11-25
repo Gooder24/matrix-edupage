@@ -268,6 +268,24 @@ func TestBridge(t *testing.T) {
 		}
 	})
 
+	// A homeserver that makes no rooms holds back only the chats that need one.
+	t.Run("no new rooms for a while", func(t *testing.T) {
+		e.roomsDown.Store(true)
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Gita, "vlastnik_meno": "Gita Teacher", "user": fakeedupage.Me,
+			"text": "A first message from Gita", "cas_pridania": time.Now().Add(-time.Minute).In(edupage.Location).Format(time.DateTime)})
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "Meanwhile in an old chat"})
+		if !until(time.Minute, func() bool { return c.find(dm, isBody("Meanwhile in an old chat")) != nil }) {
+			t.Error("a chat that has its room waited for one that has none")
+		}
+		if c.roomWhere(isBody("A first message from Gita")) != "" {
+			t.Error("a room was made while the homeserver made none")
+		}
+		e.roomsDown.Store(false)
+		if !until(time.Minute, func() bool { return c.roomWhere(isBody("A first message from Gita")) != "" }) {
+			t.Error("the waiting message never came once rooms could be made again")
+		}
+	})
+
 	t.Run("room features", func(t *testing.T) {
 		var f map[string]any
 		if err := c.call("GET", "/_matrix/client/v3/rooms/"+dm+"/state/com.beeper.room_features/"+url.PathEscape(server+"/edupage"), nil, &f); err != nil {

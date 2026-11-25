@@ -231,7 +231,7 @@ type Contact struct{ ID, Name string }
 func (c *Client) Teachers() []Contact {
 	dbi, _ := c.Data["dbi"].(map[string]any)
 	teachers, _ := dbi["teachers"].(map[string]any)
-	today := time.Now().Format(time.DateOnly)
+	today := time.Now().In(Location).Format(time.DateOnly)
 	var out []Contact
 	for id, raw := range teachers {
 		t, _ := raw.(map[string]any)
