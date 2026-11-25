@@ -48,6 +48,8 @@ type EduPageClient struct {
 	failedNow map[networkid.PortalKey]bool
 	// ensure replaces ensureRoom in tests.
 	ensure func(context.Context, networkid.PortalKey) error
+	// holdUnsaved: the place an outage began could not be saved yet, so the next failed check tries again.
+	holdUnsaved bool
 	// slowNow: chats past the cap whose room got no answer in this poll; after two, the others past the cap wait.
 	slowNow int
 	saveMu  sync.Mutex
@@ -350,7 +352,8 @@ func (ec *EduPageClient) homeserverAnswers(ctx context.Context) error {
 // own answer about one room.
 func noAnswer(status int) bool {
 	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable ||
-		status == http.StatusGatewayTimeout || status == http.StatusTooManyRequests
+		status == http.StatusGatewayTimeout || status == http.StatusTooManyRequests ||
+		status >= 520 && status <= 524 // a CDN in front of a homeserver that is down
 }
 
 var errTransient = errors.New("the homeserver did not make a room")

@@ -71,19 +71,20 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		if cfg.InitialDays > 0 {
 			since = today.AddDate(0, 0, -cfg.InitialDays)
 		}
-	} else if !pending.IsZero() && pending.Before(since) {
-		since = pending // something is not in Matrix yet, or a notice waits
+	}
+	if !pending.IsZero() && pending.Before(since) {
+		since = pending // something is not in Matrix yet, a notice waits, or the homeserver was away
 	}
 	if err := ec.homeserverAnswers(ctx); err != nil {
 		// Nothing is read, queued or counted while the homeserver is away: every waiting item keeps
 		// holding the reads back, and the first poll after it reads back to where the outage began, however
-		// long it lasted (also across a restart: the place is saved with the login).
-		if backfilled && !since.Equal(pending) {
+		// long it lasted (also across a restart: the place is saved with the login, again until that works).
+		if !since.Equal(pending) || ec.holdUnsaved {
 			m := ec.meta()
 			m.mu.Lock()
 			m.Pending = since.Unix()
 			m.mu.Unlock()
-			_ = ec.save(ctx)
+			ec.holdUnsaved = ec.save(ctx) != nil
 		}
 		return fmt.Errorf("%w: %w", errHomeserverAway, err)
 	}
