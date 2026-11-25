@@ -69,6 +69,10 @@ type env struct {
 	pid      int
 	// roomsDown makes the homeserver answer the bridge's createRoom with 500, as if it were down.
 	roomsDown *atomic.Bool
+	// away makes the homeserver answer the bridge 502 to everything, as if it were down behind its proxy;
+	// versions counts the bridge's checks of it.
+	away     *atomic.Bool
+	versions *atomic.Int32
 	// failing makes createRoom answer 500 for one chat: a lower-case EduPage id → *atomic.Int32 of tries.
 	failing *sync.Map
 }
@@ -165,10 +169,17 @@ appservice_dir = "%s"
 	}
 
 	// The bridge talks to the homeserver through a proxy that can refuse to make rooms.
-	roomsDown, failing := &atomic.Bool{}, &sync.Map{}
+	roomsDown, failing, away, versions := &atomic.Bool{}, &sync.Map{}, &atomic.Bool{}, &atomic.Int32{}
 	target, _ := url.Parse(hsURL)
 	rp := httputil.NewSingleHostReverseProxy(target)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_matrix/client/versions" {
+			versions.Add(1)
+		}
+		if away.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/createRoom") {
 			body, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(body))
@@ -261,7 +272,7 @@ logging:
 			t.Logf("bridge log (last 60 lines):\n%s", strings.Join(lines[max(0, len(lines)-60):], "\n"))
 		}
 	})
-	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, failing: failing, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
+	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, failing: failing, away: away, versions: versions, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
 	if !until(30*time.Second, func() bool { return e.provision("GET", "/v3/whoami", nil, nil) == nil }) {
 		t.Fatal("bridge did not start")
 	}

@@ -13,6 +13,7 @@ import (
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
@@ -200,6 +201,14 @@ func (ec *EduPageClient) reportError(err error) {
 		})
 		return
 	}
+	if errors.Is(err, errHomeserverAway) {
+		ec.UserLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateTransientDisconnect,
+			Error:      "homeserver-unreachable",
+			Message:    "The homeserver is not answering; EduPage is read again once it does",
+		})
+		return
+	}
 	ec.UserLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateTransientDisconnect,
 		Error:      "edupage-unreachable",
@@ -315,6 +324,20 @@ func (ec *EduPageClient) ensureRoom(ctx context.Context, key networkid.PortalKey
 }
 
 const roomTimeout = 30 * time.Second
+
+var errHomeserverAway = errors.New("the homeserver does not answer")
+
+// homeserverAnswers asks the homeserver for its versions once, without retries.
+func (ec *EduPageClient) homeserverAnswers(ctx context.Context) error {
+	mc, ok := ec.Main.Bridge.Matrix.(*matrix.Connector)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(mautrix.WithMaxRetries(ctx, 0), 10*time.Second)
+	defer cancel()
+	_, err := mc.AS.BotClient().Versions(ctx)
+	return err
+}
 
 // noAnswer: statuses that a proxy gives for a homeserver that is down or too busy, not the homeserver's
 // own answer about one room.

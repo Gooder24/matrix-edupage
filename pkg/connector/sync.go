@@ -62,6 +62,11 @@ func schoolYearStart(today time.Time) time.Time {
 }
 
 func (ec *EduPageClient) poll(ctx context.Context) error {
+	if err := ec.homeserverAnswers(ctx); err != nil {
+		// Nothing is read, queued or counted while the homeserver is away: every waiting item keeps
+		// holding the reads back, however long that takes.
+		return fmt.Errorf("%w: %w", errHomeserverAway, err)
+	}
 	cfg := ec.Main.Config
 	backfilled, pending := ec.meta().progress()
 	today := time.Now().In(edupage.Location)
@@ -138,7 +143,7 @@ func (h *horizon) hold(t time.Time) {
 const maxTries = 12
 
 // undelivered counts another poll in which the homeserver answered but the item is not in Matrix, and holds
-// the reads back to it. A homeserver that does not answer counts nothing: the item waits however long that takes.
+// the reads back to it. A poll whose homeserver does not answer counts nothing (poll, room).
 func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) {
 	id := it.ID.Int()
 	ec.tries[id]++
@@ -295,13 +300,6 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 		if _, ok := seen[id]; ok {
 			return
 		}
-		if n := ec.tries[id]; n > maxTries && n&(n-1) != 0 {
-			// Past the cap it is tried again only in polls 16, 32, 64… so a lasting refusal costs little and
-			// one that ends still lets it through. Its replies meanwhile come alone.
-			ec.tries[id]++
-			seen[id] = &threadInfo{root: id}
-			return
-		}
 		_, parentKnown := seen[parent]
 		if !parentKnown {
 			_, parentKnown = ec.known(ctx, parent)
@@ -322,10 +320,16 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 		if info.portal.ID == "" {
 			info.portal = ec.portalKey(ec.counterpart(it, userID))
 		}
+		seen[id] = info
+		if n := ec.tries[id]; n > maxTries && n&(n-1) != 0 {
+			// Past the cap it is tried again only in polls 16, 32, 64… so a lasting refusal costs little and
+			// one that ends still lets it through. Its replies meanwhile come alone, in its room.
+			ec.tries[id]++
+			return
+		}
 		// A reply whose thread's first message is queued in this poll waits for it to be in Matrix, or
 		// it would come without its link; once that message gave up, the reply comes alone.
 		waitRoot := info.root != id && queuedNow[info.root] && ec.tries[info.root] <= maxTries
-		seen[id] = info
 		if !ec.room(ctx, info.portal, back, it) {
 			return
 		}

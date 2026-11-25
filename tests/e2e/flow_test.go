@@ -287,6 +287,36 @@ func TestBridge(t *testing.T) {
 		}
 	})
 
+	// A homeserver away for longer than the cap loses nothing, and everything comes as soon as it is back.
+	t.Run("a homeserver away for long", func(t *testing.T) {
+		e.away.Store(true)
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "While the homeserver was away"})
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Lena, "vlastnik_meno": "Lena Teacher", "user": fakeedupage.Me, "text": "A first message from Lena"})
+		start := e.versions.Load()
+		if !until(time.Minute, func() bool { return e.versions.Load()-start >= 20 }) {
+			e.away.Store(false)
+			t.Fatalf("the bridge checked the homeserver %d times in a minute", e.versions.Load()-start)
+		}
+		e.away.Store(false)
+		back := time.Now()
+		for _, text := range []string{"While the homeserver was away", "A first message from Lena"} {
+			if !until(time.Minute, func() bool { return c.roomWhere(isBody(text)) != "" }) {
+				t.Errorf("%q never came", text)
+			} else if d := time.Since(back); d > 8*time.Second {
+				t.Errorf("%q came %v after the homeserver was back", text, d.Round(time.Second))
+			}
+		}
+		n := 0
+		for _, ev := range c.roomEvents(dm) {
+			if isBody("While the homeserver was away")(ev) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("the message came %d times", n)
+		}
+	})
+
 	// Two chats whose rooms keep failing do not keep a new chat from getting its room.
 	t.Run("two chats that keep failing", func(t *testing.T) {
 		hana, ivo := &atomic.Int32{}, &atomic.Int32{}
