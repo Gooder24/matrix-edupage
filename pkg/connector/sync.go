@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"sort"
 	"time"
@@ -97,23 +98,30 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 	}
 	var back horizon
 	seen, err := ec.queueMessages(ctx, items, &back)
-	if err != nil {
-		return err
+	if err == nil {
+		err = ec.queueNotices(ctx, items, seen, &back)
 	}
-	if err = ec.queueNotices(ctx, items, seen, &back); err != nil {
-		return err
+	if err != nil {
+		// A poll that stopped half way keeps everything it did not get to: it reads from where it started
+		// again, and also from what it found that is older still.
+		back.hold(since)
+		if !pending.IsZero() {
+			back.hold(pending)
+		}
 	}
 	if !backfilled || !back.t.Equal(pending) {
 		m := ec.meta()
 		m.mu.Lock()
-		m.Backfilled, m.Pending = true, 0
+		m.Backfilled, m.Pending = backfilled || err == nil, 0
 		if !back.t.IsZero() {
 			m.Pending = back.t.Unix()
 		}
 		m.mu.Unlock()
-		return ec.save(ctx)
+		if saveErr := ec.save(ctx); err == nil {
+			err = saveErr
+		}
 	}
-	return nil
+	return err
 }
 
 // horizon is how far back the next poll reads: to the oldest item that is not in Matrix yet (events are
@@ -127,34 +135,36 @@ func (h *horizon) hold(t time.Time) {
 }
 
 // maxTries: an item that is still not in Matrix after this many polls (bridgev2 or the homeserver
-// refuses it) no longer holds the reads back, and is not queued again until the bridge restarts.
-const maxTries = 3
+// refuses it) no longer holds the reads back. It is still queued whenever a read finds it.
+const maxTries = 12
 
-// undelivered counts another poll that found the item not in Matrix; false once it gave up.
-func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) bool {
+// undelivered counts another poll that found the item not in Matrix and holds the reads back to it.
+func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) {
 	id := it.ID.Int()
 	ec.tries[id]++
-	if ec.tries[id] > maxTries {
-		return false
+	if ec.tries[id] <= maxTries {
+		back.hold(it.Time())
 	}
-	back.hold(it.Time())
-	return true
 }
 
 // room makes sure the portal's room exists before an item is queued into it. ok is false when the item
 // is not queued now: the filter does not want the chat (nothing waits), or the homeserver refused the
-// room (the item waits like one not delivered). A homeserver that does not answer ends the poll.
+// room (the item waits like one not delivered). A homeserver that does not answer ends the poll, with
+// the item held, so the reads come back to it.
 func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back *horizon, it *edupage.Item) (ok bool, err error) {
-	switch err = ec.ensureRoom(ctx, key); {
-	case err == nil:
-		return ec.undelivered(back, it), nil
-	case errors.Is(err, errFiltered):
+	err = ec.ensureRoom(ctx, key)
+	if errors.Is(err, errFiltered) {
 		return false, nil
+	}
+	ec.undelivered(back, it)
+	switch {
+	case err == nil:
+		return true, nil
 	case errors.Is(err, errTransient):
+		back.hold(it.Time())
 		return false, err
 	default:
 		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver refused a room; the next poll tries again")
-		ec.undelivered(back, it)
 		return false, nil
 	}
 }
@@ -231,7 +241,7 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 	seen := map[int64]*threadInfo{}
 	settle := map[networkid.PortalKey]networkid.MessageID{}
 	settleBefore := time.Now().AddDate(0, 0, -ec.Main.Config.SettleDays)
-	visiting := map[int64]bool{}
+	visiting, queuedNow := map[int64]bool{}, map[int64]bool{}
 	var failed error
 	var bridge func(it *edupage.Item)
 	bridge = func(it *edupage.Item) {
@@ -272,6 +282,9 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 		if info.portal.ID == "" {
 			info.portal = ec.portalKey(ec.counterpart(it, userID))
 		}
+		// A reply whose thread's first message is queued in this poll waits for it to be in Matrix, or
+		// it would come without its link; once that message gave up, the reply comes alone.
+		waitRoot := info.root != id && queuedNow[info.root] && ec.tries[info.root] <= maxTries
 		seen[id] = info
 		ok, err := ec.room(ctx, info.portal, back, it)
 		if err != nil {
@@ -280,7 +293,8 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 		} else if !ok {
 			return
 		}
-		ec.queueMessage(it, info, school, userID)
+		ec.queueMessage(it, info, school, userID, waitRoot)
+		queuedNow[id] = true
 		if it.Time().Before(settleBefore) {
 			settle[info.portal] = makeMessageID(id)
 		}
@@ -303,7 +317,9 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 	return seen, nil
 }
 
-func (ec *EduPageClient) queueMessage(it *edupage.Item, info *threadInfo, school, userID string) {
+var errRootMissing = fmt.Errorf("%w: its thread's first message is not in Matrix yet", bridgev2.ErrIgnoringRemoteEvent)
+
+func (ec *EduPageClient) queueMessage(it *edupage.Item, info *threadInfo, school, userID string, waitRoot bool) {
 	id := it.ID.Int()
 	item := *it
 	sender := ec.sender(string(it.Owner), string(it.OwnerName))
@@ -321,6 +337,11 @@ func (ec *EduPageClient) queueMessage(it *edupage.Item, info *threadInfo, school
 		ID:   makeMessageID(id),
 		Data: &item,
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, it *edupage.Item) (*bridgev2.ConvertedMessage, error) {
+			if waitRoot {
+				if root, err := ec.Main.Bridge.DB.Message.GetFirstPartByID(ctx, ec.UserLogin.ID, makeMessageID(info.root)); err != nil || root == nil {
+					return nil, errRootMissing // the next poll queues it again
+				}
+			}
 			return ec.convertMessage(it, info.root, school), nil
 		},
 	})

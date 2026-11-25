@@ -118,3 +118,23 @@ func TestAnswerCardsZero(t *testing.T) {
 		}
 	}
 }
+
+func TestTimelineDayIsTheSchools(t *testing.T) {
+	var got string
+	school := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		got = r.PostForm.Get("datefrom")
+		_, _ = w.Write([]byte(`{"timelineItems": [], "homeworks": []}`))
+	}))
+	defer school.Close()
+	c := New(school.URL+"/{school}", time.Second)
+	c.School = "myschool"
+	// 23:30 at the school is already the next day further east.
+	since := time.Date(2026, 11, 4, 23, 30, 0, 0, Location).In(time.FixedZone("east", 3*3600))
+	if _, err := c.Timeline(context.Background(), since, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got != "2026-11-04" {
+		t.Errorf("datefrom %q, want the school's day 2026-11-04", got)
+	}
+}

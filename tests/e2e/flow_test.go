@@ -259,7 +259,7 @@ func TestBridge(t *testing.T) {
 			}
 		}
 		dates := fake.Dates()
-		week := time.Now().In(edupage.Location).AddDate(0, 0, -14).Format(time.DateOnly)
+		week := time.Now().In(edupage.Location).AddDate(0, 0, -7).Format(time.DateOnly) // recent_days
 		if last := dates[len(dates)-1]; last < week {
 			t.Errorf("polls still read back to %s (all reads: %v)", last, dates)
 		}

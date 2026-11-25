@@ -277,7 +277,7 @@ var errFiltered = errors.New("the portal create filter refuses this chat")
 func (ec *EduPageClient) ensureRoom(ctx context.Context, key networkid.PortalKey) error {
 	portal, err := ec.Main.Bridge.GetPortalByKey(ctx, key)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errTransient, err)
 	} else if portal.MXID != "" {
 		return nil
 	} else if !ec.Main.Bridge.Config.PortalCreateFilter.ShouldAllow(ec.UserLogin.ID, key) {
@@ -290,10 +290,14 @@ func (ec *EduPageClient) ensureRoom(ctx context.Context, key networkid.PortalKey
 		err = portal.CreateMatrixRoom(ctx, ec.UserLogin, info)
 	}
 	var httpErr mautrix.HTTPError
-	if err != nil && !(errors.As(err, &httpErr) && httpErr.Response != nil && httpErr.Response.StatusCode < 500) {
+	switch {
+	case err == nil, errors.Is(err, bridgev2.ErrPortalIsDeleted):
+		return err
+	case errors.As(err, &httpErr) && httpErr.Response != nil && httpErr.Response.StatusCode < 500:
+		return err
+	default:
 		return fmt.Errorf("%w: %w", errTransient, err)
 	}
-	return err
 }
 
 const roomTimeout = 30 * time.Second

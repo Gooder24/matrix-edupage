@@ -254,7 +254,7 @@ func (m *UserLoginMetadata) progress() (backfilled bool, pending time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Pending != 0 {
-		pending = time.Unix(m.Pending, 0)
+		pending = time.Unix(m.Pending, 0).In(edupage.Location)
 	}
 	return m.Backfilled, pending
 }

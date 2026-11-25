@@ -164,7 +164,7 @@ func (c *Client) Timeline(ctx context.Context, since time.Time, tab string) (*Ti
 	if tab != "" {
 		q += "&filterTab=" + url.QueryEscape(tab)
 	}
-	_, data, err := c.postForm(ctx, c.Base()+"/timeline/?"+q, "datefrom="+since.Format(time.DateOnly))
+	_, data, err := c.postForm(ctx, c.Base()+"/timeline/?"+q, "datefrom="+since.In(Location).Format(time.DateOnly)) // the school's day, wherever the bridge runs
 	if err != nil {
 		return nil, err
 	}
