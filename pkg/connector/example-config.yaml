@@ -1,0 +1,15 @@
+# Address of a school's EduPage, with {school} where its name goes. Only change it for testing.
+edupage_url: https://{school}.edupage.org
+# How often to read EduPage. It has no push, so the bridge polls.
+poll_interval: 5m
+# Each poll re-reads this many days of the timeline.
+recent_days: 7
+# The first poll after signing in reads this many days back; 0 is the whole school year (since 1 September).
+initial_days: 0
+# On that first poll, messages older than this many days are marked as read (needs double puppeting).
+settle_days: 7
+# Optional notices that EduPage sends many of, off by default: arrivals at school and meals handed out.
+arrivals: false
+meals: false
+# Files larger than this are not bridged (EduPage itself takes up to 25 MB).
+max_file_size: 26214400

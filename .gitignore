@@ -1,0 +1,7 @@
+GOAL-*.md
+overenie/
+/matrix-edupage
+*.db
+*.db-*
+config.yaml
+registration.yaml
