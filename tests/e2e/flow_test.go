@@ -317,9 +317,15 @@ func TestBridge(t *testing.T) {
 		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Lena, "vlastnik_meno": "Lena Teacher", "user": fakeedupage.Me, "text": "A first message from Lena"})
 		start := polls()
 		ok := until(3*time.Minute, func() bool { return polls()-start > 13 })
+		// An outage longer than recent_days must not leave what came during it behind: the bridge keeps where
+		// it began, so the first poll after it reads back that far.
+		held := e.pending()
 		e.away.Store(false)
 		if !ok {
 			t.Fatalf("the bridge checked the homeserver %d times in 3 minutes", polls()-start)
+		}
+		if held.IsZero() || held.After(time.Now().AddDate(0, 0, -7)) {
+			t.Errorf("during the outage the next poll reads back to %v, want at least the 7 recent days", held)
 		}
 		back := polls()
 		comesOnce(t, dm, "While the homeserver was away", back)
@@ -337,8 +343,17 @@ func TestBridge(t *testing.T) {
 			t.Fatalf("the bridge checked the homeserver %d times in 3 minutes", polls()-start)
 		}
 		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "Once it writes again"})
-		comesOnce(t, dm, "Once it writes again", polls())
-		comesOnce(t, dm, "While the homeserver wrote nothing", polls()-1)
+		back := polls()
+		comesOnce(t, dm, "Once it writes again", back)
+		comesOnce(t, dm, "While the homeserver wrote nothing", back)
+	})
+
+	// A homeserver that refuses only the poll's check write is there: messages still come.
+	t.Run("a homeserver that refuses the check", func(t *testing.T) {
+		e.checkRefused.Store(true)
+		defer e.checkRefused.Store(false)
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "While the check is refused"})
+		comesOnce(t, dm, "While the check is refused", polls())
 	})
 
 	// Two chats whose rooms keep failing do not keep a new chat from getting its room.

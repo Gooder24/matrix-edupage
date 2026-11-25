@@ -336,7 +336,14 @@ func (ec *EduPageClient) homeserverAnswers(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(mautrix.WithMaxRetries(ctx, 0), 10*time.Second)
 	defer cancel()
-	return mc.AS.BotClient().SetAccountData(ctx, "io.github.gooder24.edupage.poll", map[string]int64{"at": time.Now().Unix()})
+	err := mc.AS.BotClient().SetAccountData(ctx, "io.github.gooder24.edupage.poll", map[string]int64{"at": time.Now().Unix()})
+	var answer mautrix.HTTPError
+	if errors.As(err, &answer) && answer.Response != nil && !noAnswer(answer.Response.StatusCode) {
+		// The homeserver itself refused this write: it is there, and the poll's own writes show what is wrong.
+		ec.UserLogin.Log.Warn().Err(err).Msg("The homeserver refused the poll's check")
+		return nil
+	}
+	return err
 }
 
 // noAnswer: statuses that a proxy gives for a homeserver that is down or too busy, not the homeserver's

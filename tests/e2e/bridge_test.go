@@ -77,6 +77,10 @@ type env struct {
 	writesAway *atomic.Bool
 	// failing makes createRoom answer 500 for one chat: a lower-case EduPage id → *atomic.Int32 of tries.
 	failing *sync.Map
+	// checkRefused makes the homeserver itself refuse the poll's check write (403): it is there all the same.
+	checkRefused *atomic.Bool
+	// db is the bridge's database.
+	db string
 }
 
 func (e *env) provision(method, path string, body any, out any) error {
@@ -172,11 +176,17 @@ appservice_dir = "%s"
 
 	// The bridge talks to the homeserver through a proxy that can refuse to make rooms.
 	roomsDown, failing, away, versions, writesAway := &atomic.Bool{}, &sync.Map{}, &atomic.Bool{}, &atomic.Int32{}, &atomic.Bool{}
+	checkRefused := &atomic.Bool{}
 	target, _ := url.Parse(hsURL)
 	rp := httputil.NewSingleHostReverseProxy(target)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/account_data/io.github.gooder24.edupage.poll") {
 			versions.Add(1)
+			if checkRefused.Load() {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"refused for the test"}`))
+				return
+			}
 		}
 		if away.Load() || writesAway.Load() && r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusBadGateway)
@@ -274,7 +284,7 @@ logging:
 			t.Logf("bridge log (last 60 lines):\n%s", strings.Join(lines[max(0, len(lines)-60):], "\n"))
 		}
 	})
-	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, failing: failing, away: away, versions: versions, writesAway: writesAway, pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
+	e := &env{t: t, fake: fake, c: c, roomsDown: roomsDown, failing: failing, away: away, versions: versions, writesAway: writesAway, checkRefused: checkRefused, db: filepath.Join(dir, "bridge.db"), pid: br.Process.Pid, prov: fmt.Sprintf("http://127.0.0.1:%d/_matrix/provision", brPort), provAuth: provSecret}
 	if !until(30*time.Second, func() bool { return e.provision("GET", "/v3/whoami", nil, nil) == nil }) {
 		t.Fatal("bridge did not start")
 	}
@@ -314,4 +324,22 @@ func (e *env) step(s *loginStep, input map[string]string) (*loginStep, error) {
 	}
 	err := e.provision("POST", "/v3/login/step/"+s.LoginID+"/"+s.StepID+"/"+kind, body, &next)
 	return &next, err
+}
+
+// pending is how far back the login's next poll reads, as saved in the bridge's database (zero: the usual days).
+func (e *env) pending() time.Time {
+	out, err := exec.Command("sqlite3", e.db, "SELECT metadata FROM user_login").Output()
+	if err != nil {
+		e.t.Fatalf("read the bridge's database: %v", err)
+	}
+	var meta struct {
+		Pending int64 `json:"pending"`
+	}
+	if err = json.Unmarshal(out, &meta); err != nil {
+		e.t.Fatalf("login metadata %q: %v", out, err)
+	}
+	if meta.Pending == 0 {
+		return time.Time{}
+	}
+	return time.Unix(meta.Pending, 0)
 }

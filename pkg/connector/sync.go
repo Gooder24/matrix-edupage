@@ -62,11 +62,6 @@ func schoolYearStart(today time.Time) time.Time {
 }
 
 func (ec *EduPageClient) poll(ctx context.Context) error {
-	if err := ec.homeserverAnswers(ctx); err != nil {
-		// Nothing is read, queued or counted while the homeserver is away: every waiting item keeps
-		// holding the reads back, however long that takes.
-		return fmt.Errorf("%w: %w", errHomeserverAway, err)
-	}
 	cfg := ec.Main.Config
 	backfilled, pending := ec.meta().progress()
 	today := time.Now().In(edupage.Location)
@@ -78,6 +73,19 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		}
 	} else if !pending.IsZero() && pending.Before(since) {
 		since = pending // something is not in Matrix yet, or a notice waits
+	}
+	if err := ec.homeserverAnswers(ctx); err != nil {
+		// Nothing is read, queued or counted while the homeserver is away: every waiting item keeps
+		// holding the reads back, and the first poll after it reads back to where the outage began, however
+		// long it lasted (also across a restart: the place is saved with the login).
+		if backfilled && !since.Equal(pending) {
+			m := ec.meta()
+			m.mu.Lock()
+			m.Pending = since.Unix()
+			m.mu.Unlock()
+			_ = ec.save(ctx)
+		}
+		return fmt.Errorf("%w: %w", errHomeserverAway, err)
 	}
 	var items []edupage.Item
 	var edu *edupage.Client
