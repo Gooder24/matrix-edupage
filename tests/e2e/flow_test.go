@@ -348,6 +348,27 @@ func TestBridge(t *testing.T) {
 		comesOnce(t, dm, "While the homeserver wrote nothing", back)
 	})
 
+	// A save of the login that fails once is made again: the database does not keep an outage's old place.
+	t.Run("a save that fails once", func(t *testing.T) {
+		e.away.Store(true)
+		start := polls()
+		until(time.Minute, func() bool { return polls()-start > 2 })
+		if e.pending().IsZero() {
+			t.Fatal("the outage's place was not saved")
+		}
+		e.sql("CREATE TRIGGER no_save BEFORE UPDATE ON user_login BEGIN SELECT RAISE(ABORT, 'refused for the test'); END")
+		e.away.Store(false)
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "While saving failed"})
+		comesOnce(t, dm, "While saving failed", polls())
+		held := polls()
+		until(time.Minute, func() bool { return polls()-held > 2 }) // the polls that clear the place, all refused
+		e.sql("DROP TRIGGER no_save")
+		back := polls()
+		if !until(time.Minute, func() bool { return polls()-back > 2 && e.pending().IsZero() }) {
+			t.Errorf("after saving works again the database still reads back to %v", e.pending())
+		}
+	})
+
 	// A homeserver that refuses only the poll's check write is there: messages still come.
 	t.Run("a homeserver that refuses the check", func(t *testing.T) {
 		e.checkRefused.Store(true)

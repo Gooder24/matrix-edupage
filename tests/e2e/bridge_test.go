@@ -326,9 +326,16 @@ func (e *env) step(s *loginStep, input map[string]string) (*loginStep, error) {
 	return &next, err
 }
 
+// sql runs a statement on the bridge's database while the bridge runs.
+func (e *env) sql(stmt string) {
+	if out, err := exec.Command("sqlite3", "-cmd", ".timeout 5000", e.db, stmt).CombinedOutput(); err != nil {
+		e.t.Fatalf("%s: %v %s", stmt, err, out)
+	}
+}
+
 // pending is how far back the login's next poll reads, as saved in the bridge's database (zero: the usual days).
 func (e *env) pending() time.Time {
-	out, err := exec.Command("sqlite3", e.db, "SELECT metadata FROM user_login").Output()
+	out, err := exec.Command("sqlite3", "-cmd", ".timeout 5000", e.db, "SELECT metadata FROM user_login").Output()
 	if err != nil {
 		e.t.Fatalf("read the bridge's database: %v", err)
 	}

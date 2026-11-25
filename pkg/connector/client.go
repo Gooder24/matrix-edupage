@@ -48,8 +48,8 @@ type EduPageClient struct {
 	failedNow map[networkid.PortalKey]bool
 	// ensure replaces ensureRoom in tests.
 	ensure func(context.Context, networkid.PortalKey) error
-	// holdUnsaved: the place an outage began could not be saved yet, so the next failed check tries again.
-	holdUnsaved bool
+	// unsaved: the login's progress could not be saved, so the next poll saves it again, failed check or not.
+	unsaved bool
 	// slowNow: chats past the cap whose room got no answer in this poll; after two, the others past the cap wait.
 	slowNow int
 	saveMu  sync.Mutex

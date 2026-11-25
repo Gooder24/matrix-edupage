@@ -79,12 +79,12 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		// Nothing is read, queued or counted while the homeserver is away: every waiting item keeps
 		// holding the reads back, and the first poll after it reads back to where the outage began, however
 		// long it lasted (also across a restart: the place is saved with the login, again until that works).
-		if !since.Equal(pending) || ec.holdUnsaved {
+		if !since.Equal(pending) || ec.unsaved {
 			m := ec.meta()
 			m.mu.Lock()
 			m.Pending = since.Unix()
 			m.mu.Unlock()
-			ec.holdUnsaved = ec.save(ctx) != nil
+			ec.unsaved = ec.save(ctx) != nil
 		}
 		return fmt.Errorf("%w: %w", errHomeserverAway, err)
 	}
@@ -122,7 +122,7 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 			back.hold(pending)
 		}
 	}
-	if !backfilled || !back.t.Equal(pending) {
+	if !backfilled || !back.t.Equal(pending) || ec.unsaved {
 		m := ec.meta()
 		m.mu.Lock()
 		m.Backfilled, m.Pending = backfilled || err == nil, 0
@@ -130,7 +130,9 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 			m.Pending = back.t.Unix()
 		}
 		m.mu.Unlock()
-		if saveErr := ec.save(ctx); err == nil {
+		saveErr := ec.save(ctx)
+		ec.unsaved = saveErr != nil // the next poll saves again, else the database keeps an old place
+		if err == nil {
 			err = saveErr
 		}
 	}
