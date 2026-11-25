@@ -23,6 +23,8 @@ const (
 	materialDays = 14
 	// Optional notices are about today; turning them on does not replay the whole school year.
 	optionalMaxAge = 24 * time.Hour
+	// The first read after signing in repeats until it finds nothing new, at most this many times.
+	backfillReads = 4
 )
 
 func (ec *EduPageClient) pollLoop(ctx context.Context) {
@@ -99,9 +101,16 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 	}
 	// The first sign-in reads the whole range again until a read finds nothing new: events are
 	// queued, not yet in Matrix, and a restart before they land must not skip them.
-	done := backfill && queued+noticesQueued == 0 && waiting.IsZero()
-	if done || !waiting.Equal(pending) {
-		m := ec.meta()
+	// A message bridgev2 refuses would be queued again on every read, so the repeats are capped.
+	m := ec.meta()
+	m.mu.Lock()
+	if backfill {
+		m.Reads++
+	}
+	reads := m.Reads
+	m.mu.Unlock()
+	done := backfill && ((queued+noticesQueued == 0 && waiting.IsZero()) || reads >= backfillReads)
+	if backfill || !waiting.Equal(pending) {
 		m.mu.Lock()
 		m.Backfilled = m.Backfilled || done
 		m.Pending = 0
@@ -327,8 +336,9 @@ func (ec *EduPageClient) readMaterials(ctx context.Context, items []edupage.Item
 // queueNotices bridges new and changed notices. It returns the oldest notice that has to wait (for its
 // material or the message it confirms), so later polls read back far enough, and how many it queued.
 func (ec *EduPageClient) queueNotices(ctx context.Context, items []edupage.Item, seen map[int64]*threadInfo) (waiting time.Time, queued int, err error) {
+	// Only for two weeks: a confirmation of a message that never comes must not stretch every poll.
 	wait := func(it *edupage.Item) {
-		if t := it.Time(); waiting.IsZero() || t.Before(waiting) {
+		if t := it.Time(); time.Since(t) < materialDays*24*time.Hour && (waiting.IsZero() || t.Before(waiting)) {
 			waiting = t
 		}
 	}
