@@ -256,6 +256,9 @@ func (ec *EduPageClient) GetUserInfo(_ context.Context, ghost *bridgev2.Ghost) (
 	return nil, nil
 }
 
-func (ec *EduPageClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *event.RoomFeatures {
+func (ec *EduPageClient) GetCapabilities(_ context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
+	if portal.ID == schoolPortal {
+		return noticeFeatures()
+	}
 	return roomFeatures(ec.Main.Config.MaxFileSize)
 }

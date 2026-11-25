@@ -122,6 +122,27 @@ func TestBridge(t *testing.T) {
 		if school == dm || school == cyril {
 			t.Error("notices share a room with a person")
 		}
+
+		// The reply is dated before its thread's first message, which goes to Cyril's room first.
+		var form, signed map[string]any
+		room := ""
+		until(wait, func() bool {
+			if room = c.roomWhere(isBody("Is the form signed?")); room != "" {
+				form, signed = c.find(room, isBody("Is the form signed?")), c.find(room, isBody("I signed it"))
+			}
+			return form != nil && signed != nil
+		})
+		if form == nil || signed == nil || room == dm {
+			t.Fatalf("an early reply is not in its thread's room: %v %v", form, signed)
+		}
+		if str(signed, "content", "m.relates_to", "m.in_reply_to", "event_id") != form["event_id"] {
+			t.Errorf("the early reply does not answer its thread: %v", signed["content"])
+		}
+		var phone map[string]any
+		until(wait, func() bool { phone = c.find(dm, isBody("Sent from the phone")); return phone != nil })
+		if phone == nil || phone["sender"] != ghost(fakeedupage.Me) {
+			t.Errorf("a message from the user's Only alias is not the user's: %v", phone)
+		}
 	})
 
 	t.Run("ghost names", func(t *testing.T) {
@@ -194,6 +215,27 @@ func TestBridge(t *testing.T) {
 		if c.roomWhere(isBody("Arrived at 7:45")) != "" {
 			t.Error("an arrival came though arrivals are off")
 		}
+
+		// A homework file whose download fails comes as a link, then as the file on a later poll.
+		fake.FailFile("/files/essay.png", 1)
+		fake.AddHomework("Essay", "Write one page", "essay.png", fakeedupage.PNG)
+		var link, fixed map[string]any
+		until(wait, func() bool {
+			link = c.find(school, func(e map[string]any) bool { return strings.HasPrefix(str(e, "content", "body"), "essay.png: ") })
+			return link != nil
+		})
+		if link == nil {
+			t.Fatal("the failed homework file left no link")
+		}
+		until(wait, func() bool {
+			fixed = c.find(school, func(e map[string]any) bool {
+				return str(e, "content", "m.relates_to", "event_id") == link["event_id"] && str(e, "content", "m.new_content", "msgtype") == "m.image"
+			})
+			return fixed != nil
+		})
+		if fixed == nil {
+			t.Error("the homework file never came after its download failed once")
+		}
 	})
 
 	t.Run("room features", func(t *testing.T) {
@@ -211,6 +253,14 @@ func TestBridge(t *testing.T) {
 		}
 		if f["file"] == nil || f["read_receipts"] == true || f["typing_notifications"] == true {
 			t.Errorf("files, receipts or typing announced wrongly: %v", f)
+		}
+		// The notices room refuses everything, so it announces nothing.
+		var n map[string]any
+		if err := c.call("GET", "/_matrix/client/v3/rooms/"+school+"/state/com.beeper.room_features/"+url.PathEscape(server+"/edupage"), nil, &n); err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := n["reply"].(float64); v > 0 || n["file"] != nil {
+			t.Errorf("the notices room announces replies or files: %v", n)
 		}
 	})
 
@@ -290,10 +340,19 @@ func TestBridge(t *testing.T) {
 	})
 
 	t.Run("expired session and changed password", func(t *testing.T) {
+		fake.Leave(fakeedupage.Eva)
 		fake.Expire()
 		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Bea, "vlastnik_meno": "Bea Teacher", "user": fakeedupage.Me, "text": "after the expiry"})
 		if !until(wait, func() bool { return c.roomWhere(isBody("after the expiry")) != "" }) {
 			t.Error("no new sign-in after the session expired")
+		}
+		var found struct {
+			Results []struct{} `json:"results"`
+		}
+		if !until(wait, func() bool {
+			return e.provision("POST", "/v3/search_users", map[string]string{"query": "eva"}, &found) == nil && len(found.Results) == 0
+		}) {
+			t.Errorf("a teacher who left during the login is still found: %d", len(found.Results))
 		}
 		fake.SetPassword("changed")
 		fake.Expire()

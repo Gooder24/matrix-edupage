@@ -59,6 +59,8 @@ type Server struct {
 	confirmed   bool
 	password    string
 	pending     bool
+	left        map[string]string // teacher → the day they left
+	failures    map[string]int    // file path → how many more downloads fail
 }
 
 func stamp(t time.Time) string { return t.In(edupage.Location).Format(time.DateTime) }
@@ -66,7 +68,8 @@ func stamp(t time.Time) string { return t.In(edupage.Location).Format(time.DateT
 // New starts the fake with a message from Bea, Alex's reply in her thread with its helper copy, a class
 // message from Cyril with an attachment, a grade and a homework with a card.
 func New() *Server {
-	s := &Server{materials: map[string]any{}, files: map[string][]byte{}, sessions: map[string]bool{}, next: 1000, password: Password}
+	s := &Server{materials: map[string]any{}, files: map[string][]byte{}, sessions: map[string]bool{}, next: 1000, password: Password,
+		left: map[string]string{Dora: "2020-06-30"}, failures: map[string]int{}}
 	now := time.Now()
 	root := s.add(map[string]any{"typ": "sprava", "vlastnik": Bea, "vlastnik_meno": "Bea Teacher", "user": Me, "user_meno": "Alex Pupil",
 		"text": "Do you have the homework?", "cas_pridania": stamp(now.Add(-2 * time.Hour))})
@@ -78,6 +81,13 @@ func New() *Server {
 		"text": "Trip on Friday", "cas_pridania": stamp(now.Add(-time.Hour)),
 		"data": map[string]any{"attachements": map[string]any{"/" + School + "/files/trip.pdf": "trip.pdf"}}})
 	s.Root = root
+	// EduPage can date a reply before its thread's first message; it still belongs to that thread.
+	early := s.add(map[string]any{"typ": "sprava", "vlastnik": Cyril, "vlastnik_meno": "Cyril Teacher", "user": Me, "user_meno": "Alex Pupil",
+		"text": "Is the form signed?", "cas_pridania": stamp(now.Add(-30 * time.Minute))})
+	s.add(map[string]any{"typ": "sprava", "vlastnik": Bea, "vlastnik_meno": "Bea Teacher", "user": Cyril, "reakcia_na": early,
+		"text": "I signed it", "cas_pridania": stamp(now.Add(-35 * time.Minute))})
+	s.add(map[string]any{"typ": "sprava", "vlastnik": "Only" + Me, "vlastnik_meno": "Alex Pupil", "user": Bea, "user_meno": "Bea Teacher",
+		"text": "Sent from the phone", "cas_pridania": stamp(now.Add(-25 * time.Minute))})
 	s.Grade = s.add(map[string]any{"typ": "znamka", "vlastnik": Bea, "vlastnik_meno": "Bea Teacher", "text": "Mathematics: 1",
 		"cas_pridania": stamp(now.Add(-50 * time.Minute))})
 	s.files["/files/card.png"] = PNG
@@ -134,6 +144,40 @@ func (s *Server) Update(id int, fields map[string]any) {
 			}
 		}
 	}
+}
+
+// Leave makes a teacher leave the school; the bridge sees it on its next sign-in.
+func (s *Server) Leave(teacher string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.left[teacher] = "2020-06-30"
+}
+
+// FailFile makes the next n downloads of a file fail.
+func (s *Server) FailFile(path string, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures[path] = n
+}
+
+// AddHomework adds a homework notice whose material is one card with a text and a file at
+// /files/<name>, and returns the notice's id.
+func (s *Server) AddHomework(title, text, name string, data []byte) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.homeworks) + 1
+	testID, superID := fmt.Sprint(77+n), fmt.Sprint(55+n)
+	s.files["/files/"+name] = data
+	s.materials[testID] = map[string]any{"cardids": []any{"1"}, "cardsData": map[string]any{"1": map[string]any{
+		"content": mustJSON(map[string]any{"widgetClass": "CardWidget", "widgets": []any{
+			map[string]any{"widgetClass": "TextETestWidget", "props": map[string]any{"htmlText": "<p>" + text + "</p>"}},
+			map[string]any{"widgetClass": "FileETestWidget", "props": map[string]any{"files": []any{map[string]any{"src": "/" + School + "/files/" + name, "name": name}}}},
+		}}),
+	}}}
+	s.homeworks = append(s.homeworks, map[string]any{"typ": "etesthw|hw", "testid": testID, "e_superid": superID, "etestCards": 1, "etestAnswerCards": 0})
+	return s.add(map[string]any{"typ": "homework", "vlastnik": Cyril, "vlastnik_meno": "Cyril Teacher", "text": "",
+		"cas_pridania": stamp(time.Now()),
+		"data":         mustJSON(map[string]any{"superid": superID, "nazov": title, "date": time.Now().AddDate(0, 0, 2).Format(time.DateOnly)})})
 }
 
 // Expire ends every session, so the bridge must sign in again.
@@ -212,10 +256,15 @@ func (s *Server) userPage(w http.ResponseWriter) {
 		"teachers": map[string]any{
 			"11": map[string]any{"firstname": "Bea", "lastname": "Teacher"},
 			"12": map[string]any{"firstname": "Cyril", "lastname": "Teacher"},
-			"13": map[string]any{"firstname": "Dora", "lastname": "Teacher", "dateto": "2020-06-30"},
+			"13": map[string]any{"firstname": "Dora", "lastname": "Teacher"},
 			"14": map[string]any{"firstname": "Eva", "lastname": "Teacher"},
 		},
 	}}
+	for id, t := range home["dbi"].(map[string]any)["teachers"].(map[string]any) {
+		if day, ok := s.left["Ucitel"+id]; ok {
+			t.(map[string]any)["dateto"] = day
+		}
+	}
 	fmt.Fprintf(w, "<html><script>\nuserhome(%s);\nASC.gsechash=\"gsec\";\nstart();\n</script></html>", mustJSON(home))
 }
 
@@ -337,6 +386,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.json(w, map[string]any{"materialData": s.materials[r.PostForm.Get("testid")]})
 	case strings.HasPrefix(path, "/files/"):
 		data, ok := s.files[path]
+		if s.failures[path] > 0 {
+			s.failures[path]--
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
 		if !ok {
 			http.NotFound(w, r)
 			return

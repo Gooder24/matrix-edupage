@@ -355,7 +355,18 @@ func (c *Client) Download(ctx context.Context, addr string, limit int64) ([]byte
 	if err != nil {
 		return nil, "", err
 	}
-	resp, err := c.HTTP.Do(req)
+	// A redirect may not lead the session's request, or the bytes, off the school's own pages.
+	client := *c.HTTP
+	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+		if r.URL.Host != req.URL.Host || !c.SameSite(r.URL.String()) {
+			return fmt.Errorf("redirected off the school's pages: %s", r.URL.Host)
+		}
+		return nil
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", err
 	}

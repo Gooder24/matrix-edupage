@@ -1,6 +1,9 @@
 package edupage
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -75,5 +78,31 @@ func TestItem(t *testing.T) {
 	}
 	if it.Time().IsZero() {
 		t.Error("no time")
+	}
+}
+
+func TestDownloadStaysOnTheSchool(t *testing.T) {
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("from elsewhere"))
+	}))
+	defer other.Close()
+	school := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/myschool/files/away":
+			http.Redirect(w, r, other.URL+"/myschool/files/x", http.StatusFound)
+		case "/myschool/files/moved":
+			http.Redirect(w, r, "/myschool/files/here", http.StatusFound)
+		case "/myschool/files/here":
+			_, _ = w.Write([]byte("the file"))
+		}
+	}))
+	defer school.Close()
+	c := New(school.URL+"/{school}", time.Second)
+	c.School = "myschool"
+	if _, _, err := c.Download(context.Background(), school.URL+"/myschool/files/away", 100); err == nil {
+		t.Error("followed a redirect to another host")
+	}
+	if data, _, err := c.Download(context.Background(), school.URL+"/myschool/files/moved", 100); err != nil || string(data) != "the file" {
+		t.Errorf("a redirect within the school: %q %v", data, err)
 	}
 }

@@ -37,3 +37,14 @@ func roomFeatures(maxSize int64) *event.RoomFeatures {
 		TypingNotifications: false,
 	}
 }
+
+// noticeFeatures: the "EduPage" room of notices takes nothing; EduPage has no way to answer a notice.
+func noticeFeatures() *event.RoomFeatures {
+	return &event.RoomFeatures{
+		ID:       "io.github.gooder24.edupage.capabilities.notices.2026_11_25",
+		Reply:    event.CapLevelRejected,
+		Edit:     event.CapLevelRejected,
+		Delete:   event.CapLevelRejected,
+		Reaction: event.CapLevelRejected,
+	}
+}

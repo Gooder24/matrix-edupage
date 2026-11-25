@@ -23,6 +23,8 @@ type UserLoginMetadata struct {
 	Session    string `json:"session"`
 	UserID     string `json:"user_id"`
 	Backfilled bool   `json:"backfilled"`
+	// Pending is when the oldest notice still waiting was posted (Unix seconds), so polls read back to it.
+	Pending int64 `json:"pending,omitempty"`
 	// Homework material already read, by the homework's superid.
 	Materials map[string]*MaterialMeta `json:"materials,omitempty"`
 }
@@ -67,6 +69,10 @@ func (m *UserLoginMetadata) setMaterial(superID string, mat *MaterialMeta) {
 type MessageMetadata struct {
 	Root int64  `json:"root,omitempty"`
 	Sig  string `json:"sig,omitempty"`
+	// A homework file part that came as a link because the download failed, and on the text part how
+	// many times the files were tried; later polls try again a few times.
+	Failed bool `json:"failed,omitempty"`
+	Tries  int  `json:"tries,omitempty"`
 }
 
 const (

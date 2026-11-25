@@ -85,9 +85,13 @@ The `network` section of `config.yaml`:
 This bridge replaces the Python bridge of [Weft](https://github.com/Gooder24/weft), with two differences:
 each person has their own room instead of one EduPage room, and the parts that only Weft uses stay out:
 the grade book and notice rules in account data, the "Testy" calendar of upcoming tests, the nudge that has
-the timetable read again after a substitution, and the heartbeat Weft shows. Ghost IDs (`edupage_ucitel123`)
-are the same. Content keys under `sk.karchi.edupage.*` (`kind`, `to`, `actions`, `signin`) carry what Weft
-draws; other clients ignore them.
+the timetable read again after a substitution, each teacher's colour, and the heartbeat Weft shows. Ghost IDs
+(`edupage_ucitel123`) are the same. Content keys under `sk.karchi.edupage.*` (`kind`, `to`, `actions`,
+`signin`) carry what Weft draws; other clients ignore them.
+
+Sending works the Matrix way: a message in a person's room goes to that person, a reply answers its thread,
+and a file is its own media event. Weft's composer for the Python bridge instead sends an `m.text` with an
+explicit recipient and attachment list into the one shared room; it has to change before Weft can switch.
 
 ## Tests
 
@@ -97,12 +101,16 @@ TUWUNEL=/path/to/tuwunel go test ./tests/e2e -v       # bridge + throwaway Tuwun
 ```
 
 The end-to-end test starts the bridge as its own process between a temporary
-[Tuwunel](https://github.com/matrix-construct/tuwunel) homeserver and `internal/fakeedupage`, signs in with
-every flow, and checks every feature in both directions. Nothing reaches edupage.org or any other server.
+[Tuwunel](https://github.com/matrix-construct/tuwunel) homeserver and `internal/fakeedupage`, signs in
+(password, school found through login1, confirmation in the app, mailed code, an expired session, a changed
+password) and checks messages, notices, sending, room features and the teacher search. Nothing reaches
+edupage.org or any other server. Not covered there: a successful sign-in through the old `edubarLogin.php`
+form (the fake only refuses on it), double puppeting, and arrival and meal notices turned on.
 
 `E2E_MEASURE=5m` measures the bridge signed in and polling every 30 s against the fake: on a laptop it used
-19 MB of memory and 0.7 s of CPU per hour. Weft's Python bridge, polling the real EduPage every 5 minutes,
-uses 33 MB and about 1.8 s per hour.
+about 31 MB of memory and 0.4–0.9 s of CPU per hour. Weft's Python bridge used 33 MB and about 1.8 s per
+hour polling the real EduPage every 5 minutes; the workloads differ, so take it only as "about the same
+memory, less CPU".
 
 ## License
 

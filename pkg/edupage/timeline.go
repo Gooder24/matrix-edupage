@@ -257,7 +257,8 @@ func nonZero(v any) bool {
 // Material reads a homework's cards the way edupage.org's player does. Only plain homework whose
 // cards ask for no answer: reading it marks nothing as seen or started. Others give an empty Material.
 func (c *Client) Material(ctx context.Context, hw *Homework) (*Material, error) {
-	if hw == nil || hw.Type != "etesthw|hw" || !nonZero(hw.Cards) || nonZero(hw.AnswerCards) {
+	// Like edupage-api: cards only when EduPage says outright that none of them asks for an answer.
+	if hw == nil || hw.Type != "etesthw|hw" || !nonZero(hw.Cards) || hw.AnswerCards == nil || nonZero(hw.AnswerCards) {
 		return &Material{}, nil
 	}
 	form := url.Values{"testid": {string(hw.TestID)}, "superid": {string(hw.SuperID)}, "pridelenieid": {""}, "vysledokid": {""}}

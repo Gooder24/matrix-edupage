@@ -219,7 +219,11 @@ func (el *EduPageLogin) complete(ctx context.Context) (*bridgev2.LoginStep, erro
 	meta := &UserLoginMetadata{School: c.School, Username: c.Username, Password: el.password, Session: c.Session(), UserID: c.UserID()}
 	id := loginID(c.School, c.UserID())
 	if old, _ := el.Main.Bridge.GetExistingUserLoginByID(ctx, id); old != nil {
-		meta.Backfilled = old.Metadata.(*UserLoginMetadata).isBackfilled()
+		backfill, pending := old.Metadata.(*UserLoginMetadata).progress()
+		meta.Backfilled = !backfill
+		if !pending.IsZero() {
+			meta.Pending = pending.Unix()
+		}
 	}
 	ul, err := el.User.NewLogin(ctx, &database.UserLogin{
 		ID:            id,
@@ -245,8 +249,12 @@ func (el *EduPageLogin) complete(ctx context.Context) (*bridgev2.LoginStep, erro
 	}, nil
 }
 
-func (m *UserLoginMetadata) isBackfilled() bool {
+// progress says whether the first read is still going and since when a notice has been waiting.
+func (m *UserLoginMetadata) progress() (backfill bool, pending time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.Backfilled
+	if m.Pending != 0 {
+		pending = time.Unix(m.Pending, 0)
+	}
+	return !m.Backfilled, pending
 }
