@@ -88,6 +88,9 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		}
 		return fmt.Errorf("%w: %w", errHomeserverAway, err)
 	}
+	if ec.unsaved { // before EduPage is read: a read that fails must not keep the old place in the database
+		ec.unsaved = ec.save(ctx) != nil
+	}
 	var items []edupage.Item
 	var edu *edupage.Client
 	err := ec.withSession(ctx, func(c *edupage.Client) (err error) {

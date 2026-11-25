@@ -362,6 +362,8 @@ func TestBridge(t *testing.T) {
 		comesOnce(t, dm, "While saving failed", polls())
 		held := polls()
 		until(time.Minute, func() bool { return polls()-held > 2 }) // the polls that clear the place, all refused
+		fake.TimelineOut(true)                                      // and EduPage does not answer when saving works again
+		defer fake.TimelineOut(false)
 		e.sql("DROP TRIGGER no_save")
 		back := polls()
 		if !until(time.Minute, func() bool { return polls()-back > 2 && e.pending().IsZero() }) {

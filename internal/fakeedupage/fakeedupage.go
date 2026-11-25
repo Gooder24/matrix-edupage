@@ -69,6 +69,7 @@ type Server struct {
 	pending     bool
 	left        map[string]string // teacher → the day they left
 	failures    map[string]int    // file path → how many more downloads fail
+	timelineOut bool              // the timeline answers 503
 }
 
 func stamp(t time.Time) string { return t.In(edupage.Location).Format(time.DateTime) }
@@ -175,6 +176,13 @@ func (s *Server) Leave(teacher string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.left[teacher] = "2020-06-30"
+}
+
+// TimelineOut makes reading the timeline answer 503 until it is called with false.
+func (s *Server) TimelineOut(out bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.timelineOut = out
 }
 
 // FailFile makes the next n downloads of a file fail.
@@ -374,6 +382,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, loginPage) // what EduPage shows to an expired session
 	case path == "/user" || path == "/user/":
 		s.userPage(w)
+	case path == "/timeline/" && q.Get("akcia") == "getData" && s.timelineOut:
+		http.Error(w, "busy", http.StatusServiceUnavailable)
 	case path == "/timeline/" && q.Get("akcia") == "getData":
 		s.timeline(w, r, q)
 	case path == "/timeline/" && q.Get("akcia") == "uploadAtt":
