@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -41,8 +42,11 @@ type EduPageClient struct {
 	roomsDown bool
 	// roomFails: polls in a row in which a portal's room did not come because the homeserver did not answer.
 	roomFails map[networkid.PortalKey]int
-	// failedNow: portals whose room failed in this poll; their other items do not try again.
+	// failedNow: portals whose room failed in this poll, and whether the homeserver answered; their other
+	// items do not try again.
 	failedNow map[networkid.PortalKey]bool
+	// ensure replaces ensureRoom in tests.
+	ensure func(context.Context, networkid.PortalKey) error
 	// slowNow: chats past the cap whose room got no answer in this poll; after two, the others past the cap wait.
 	slowNow int
 	saveMu  sync.Mutex
@@ -303,13 +307,20 @@ func (ec *EduPageClient) ensureRoom(ctx context.Context, key networkid.PortalKey
 	switch {
 	case err == nil, errors.Is(err, bridgev2.ErrPortalIsDeleted):
 		return err
-	case errors.As(err, &httpErr) && httpErr.Response != nil && httpErr.Response.StatusCode < 500:
-		return err
+	case errors.As(err, &httpErr) && httpErr.Response != nil && !noAnswer(httpErr.Response.StatusCode):
+		return err // the homeserver answered: it refused this room or failed on it
 	default:
 		return fmt.Errorf("%w: %w", errTransient, err)
 	}
 }
 
 const roomTimeout = 30 * time.Second
+
+// noAnswer: statuses that a proxy gives for a homeserver that is down or too busy, not the homeserver's
+// own answer about one room.
+func noAnswer(status int) bool {
+	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout || status == http.StatusTooManyRequests
+}
 
 var errTransient = errors.New("the homeserver did not make a room")

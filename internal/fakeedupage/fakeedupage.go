@@ -34,6 +34,7 @@ const (
 	Hana     = "Ucitel17" // her room keeps failing
 	Ivo      = "Ucitel18" // his room keeps failing too
 	Jana     = "Ucitel19" // writes first while Hana's and Ivo's rooms keep failing
+	Kata     = "Ucitel20" // writes first while Hana's and Ivo's rooms just started failing
 	Class    = "Trieda7"
 	Code     = "246810" // the mailed second-factor code
 )

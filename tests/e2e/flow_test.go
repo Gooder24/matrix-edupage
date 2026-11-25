@@ -296,8 +296,20 @@ func TestBridge(t *testing.T) {
 			fake.Add(map[string]any{"typ": "sprava", "vlastnik": who, "vlastnik_meno": name + " Teacher", "user": fakeedupage.Me,
 				"text": "A first message from " + name})
 		}
-		// Past the cap of 12 polls both are tried once a poll, and two of them failing used to stop all new rooms.
-		if !until(2*time.Minute, func() bool { return hana.Load() > 14 && ivo.Load() > 14 }) {
+		// The homeserver answers about these two rooms, so it is up: a new chat does not wait for them.
+		if !until(time.Minute, func() bool { return hana.Load() >= 2 && ivo.Load() >= 2 }) {
+			t.Fatalf("the failing rooms were tried %d and %d times", hana.Load(), ivo.Load())
+		}
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Kata, "vlastnik_meno": "Kata Teacher", "user": fakeedupage.Me,
+			"text": "A first message from Kata"})
+		if !until(time.Minute, func() bool { return c.roomWhere(isBody("A first message from Kata")) != "" }) {
+			t.Fatal("a new chat got no room while two others kept failing")
+		}
+		if n := hana.Load(); n >= 10 {
+			t.Errorf("a new chat waited until the failing rooms were tried %d times", n)
+		}
+		// Past the cap of 12 polls they are tried less often, and two of them failing used to stop all new rooms.
+		if !until(2*time.Minute, func() bool { return hana.Load() > 12 && ivo.Load() > 12 }) {
 			t.Fatalf("the failing rooms were tried %d and %d times", hana.Load(), ivo.Load())
 		}
 		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Jana, "vlastnik_meno": "Jana Teacher", "user": fakeedupage.Me,

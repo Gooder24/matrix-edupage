@@ -133,11 +133,12 @@ func (h *horizon) hold(t time.Time) {
 	}
 }
 
-// maxTries: an item that is still not in Matrix after this many polls (bridgev2 or the homeserver
-// refuses it) no longer holds the reads back. It is still queued whenever a read finds it.
+// maxTries: an item that is still not in Matrix after this many polls in which the homeserver answered
+// (bridgev2 or the homeserver refuses it) no longer holds the reads back and is queued less and less often.
 const maxTries = 12
 
-// undelivered counts another poll that found the item not in Matrix and holds the reads back to it.
+// undelivered counts another poll in which the homeserver answered but the item is not in Matrix, and holds
+// the reads back to it. A homeserver that does not answer counts nothing: the item waits however long that takes.
 func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) {
 	id := it.ID.Int()
 	ec.tries[id]++
@@ -148,43 +149,58 @@ func (ec *EduPageClient) undelivered(back *horizon, it *edupage.Item) {
 
 // room makes sure the portal's room exists before an item is queued into it. ok is false when the item
 // is not queued now: the filter does not want the chat (nothing waits), the homeserver refused the room
-// (the item waits like one not delivered), or the homeserver did not answer. After that, the rest of the
-// poll makes no new rooms; items in rooms that exist go on, and the waiting ones hold the reads back
-// until a room can be made again.
+// or failed on it (the item waits like one not delivered), or the homeserver did not answer (the item
+// waits, and the rest of the poll makes no new rooms; items in rooms that exist go on).
 func (ec *EduPageClient) room(ctx context.Context, key networkid.PortalKey, back *horizon, it *edupage.Item) bool {
-	if ec.failedNow[key] || (ec.slowNow > 1 && ec.roomFails[key] >= maxTries) {
-		// Its room already failed in this poll, or two chats that keep failing did: one try a poll is enough.
-		ec.undelivered(back, it)
+	if answered, failed := ec.failedNow[key]; failed {
+		// Its room already failed in this poll; one try a poll is enough.
+		if answered {
+			ec.undelivered(back, it)
+		} else {
+			back.hold(it.Time())
+		}
 		return false
 	}
-	err := ec.ensureRoom(ctx, key)
+	if ec.slowNow > 1 && ec.roomFails[key] >= maxTries {
+		back.hold(it.Time()) // two chats that keep getting no answer already failed in this poll
+		return false
+	}
+	ensure := ec.ensureRoom
+	if ec.ensure != nil {
+		ensure = ec.ensure
+	}
+	err := ensure(ctx, key)
 	switch {
 	case errors.Is(err, errFiltered):
 		return false
 	case errors.Is(err, errTransient) && ec.roomsDown:
 		back.hold(it.Time())
 		return false
-	case errors.Is(err, errTransient) && ec.roomFails[key] < maxTries:
-		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("No new rooms in this poll")
-		ec.roomFails[key]++
-		ec.roomsDown = true
+	case errors.Is(err, errTransient):
+		// No answer. While this chat is new to failing, that means the homeserver is down, and the poll
+		// makes no more rooms. A chat that keeps getting no answer stops holding back the others after a
+		// few polls; once two such chats failed in a poll, the others like them wait for the next one.
+		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver did not make a room")
+		ec.failedNow[key] = false
+		if ec.roomFails[key] < maxTries {
+			ec.roomFails[key]++
+			ec.roomsDown = true
+		} else {
+			ec.slowNow++
+		}
 		back.hold(it.Time())
 		return false
-	case errors.Is(err, errTransient):
-		// A chat whose room keeps failing stops holding back the others after a few polls. Once two such
-		// chats failed in a poll, the others like them wait for the next poll; a new chat still tries once,
-		// and its failure (a homeserver that is down) stops the rooms of this poll.
-		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver keeps not making this room")
-		ec.failedNow[key] = true
-		ec.slowNow++
 	case err == nil:
 		delete(ec.roomFails, key)
+		ec.undelivered(back, it) // queued, not in Matrix yet
+		return true
 	default:
+		// The homeserver answered: it refused this room or failed on it. Other chats go on.
 		zerolog.Ctx(ctx).Warn().Err(err).Str("portal", string(key.ID)).Msg("The homeserver refused a room; the next poll tries again")
 		ec.failedNow[key] = true
+		ec.undelivered(back, it)
+		return false
 	}
-	ec.undelivered(back, it)
-	return err == nil
 }
 
 // setTeachers replaces the people the user can start a message to; one who left is gone at once.
@@ -277,6 +293,13 @@ func (ec *EduPageClient) queueMessages(ctx context.Context, items []edupage.Item
 			bridge(p) // the thread's first message goes first, however EduPage dated it
 		}
 		if _, ok := seen[id]; ok {
+			return
+		}
+		if n := ec.tries[id]; n > maxTries && n&(n-1) != 0 {
+			// Past the cap it is tried again only in polls 16, 32, 64… so a lasting refusal costs little and
+			// one that ends still lets it through. Its replies meanwhile come alone.
+			ec.tries[id]++
+			seen[id] = &threadInfo{root: id}
 			return
 		}
 		_, parentKnown := seen[parent]
