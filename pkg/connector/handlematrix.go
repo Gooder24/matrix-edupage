@@ -13,7 +13,7 @@ import (
 	"github.com/Gooder24/matrix-edupage/pkg/edupage"
 )
 
-// ErrNoRecipient: outside a person's room EduPage needs a message to answer.
+// ErrNoRecipient: outside a person's room or a new message's room EduPage needs a message to answer.
 var ErrNoRecipient = bridgev2.WrapErrorInStatus(errors.New("EduPage needs a recipient: reply to a message, or write in a person's chat")).
 	WithErrorAsMessage().WithIsCertain(true).WithSendNotice(true).
 	WithStatus(event.MessageStatusFail).WithErrorReason(event.MessageStatusUnsupported)
@@ -55,13 +55,32 @@ func (ec *EduPageClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.
 			root = parseMessageID(msg.ReplyTo.ID)
 		}
 	}
-	person, isPerson := portalPerson(msg.Portal.ID)
-	to := edupageID(person)
-	if root == 0 && (!isPerson || to == "") {
+	to := ""
+	if person, isPerson := portalPerson(msg.Portal.ID); isPerson {
+		to = sendID(person)
+	}
+	komu, isKomu := portalKomu(msg.Portal.ID)
+	if root == 0 && to == "" && !isKomu {
 		return nil, ErrNoRecipient
 	}
+	opts, err := messageOptions(msg.Event)
+	if err != nil {
+		return nil, err
+	}
 	var id int64
-	err := ec.withSession(ctx, func(c *edupage.Client) error {
+	err = ec.withSession(ctx, func(c *edupage.Client) error {
+		var o *edupage.Options
+		if root == 0 {
+			if isKomu {
+				var err error
+				if to, err = komuTo(c, komu); err != nil {
+					return err // before any file goes up
+				}
+			}
+			if c.Role() == edupage.RoleTeacher {
+				o = opts
+			}
+		}
 		// Uploaded with the session that sends, so a renewed session uploads them again.
 		atts := map[string]string{}
 		for _, f := range files {
@@ -75,7 +94,7 @@ func (ec *EduPageClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.
 		if root != 0 {
 			id, err = c.SendReply(ctx, root, text, atts)
 		} else {
-			id, err = c.SendMessage(ctx, to, text, atts)
+			id, err = c.SendMessage(ctx, to, text, atts, o)
 		}
 		return err
 	})

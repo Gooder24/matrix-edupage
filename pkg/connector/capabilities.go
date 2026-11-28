@@ -9,6 +9,12 @@ func (ec *EduPageConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabiliti
 	return &bridgev2.NetworkGeneralCapabilities{
 		Provisioning: bridgev2.ProvisioningCapabilities{
 			ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{CreateDM: true, Search: true},
+			// "New message" to classes, groups and people of the contact list, at least one.
+			GroupCreation: map[string]bridgev2.GroupTypeCapabilities{groupType: {
+				TypeDescription: "a new EduPage message to classes, subject groups and people",
+				Name:            bridgev2.GroupFieldCapability{Allowed: true},
+				Participants:    bridgev2.GroupFieldCapability{Allowed: true, Required: true, MinLength: 1},
+			}},
 		},
 	}
 }

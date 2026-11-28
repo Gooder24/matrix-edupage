@@ -30,11 +30,23 @@ counterpart.
   answered (signing up or confirming stays on EduPage).
 * **Files:** attachments of messages are links to EduPage (they need its session to open); the material of a
   recent homework (its text and files, read once) comes with the homework notice, the files as Matrix media.
-* **Sending:** in a person's room a message starts a new EduPage message to them; a Matrix reply answers in
-  that thread, also in a class room. Files go up as EduPage's own form uploads them (25 MB each). EduPage has
-  no edits, deletions, reactions, typing or read receipts for messages, so the rooms say so.
-* **New chats:** the school's current teachers can be searched and a chat with one started (`search_users`,
-  `resolve_identifier`, `create_dm`).
+* **Sending:** in a person's room a message starts a new EduPage message to them (a pupil alone, without
+  their parents); a Matrix reply answers in that thread, also in a class room. Files go up as EduPage's own
+  form uploads them (25 MB each). EduPage has no edits, deletions, reactions, typing or read receipts for
+  messages, so the rooms say so.
+* **New chats:** the contact list (`contacts`, `search_users`) is whom EduPage lets you write to, by your
+  role: a pupil gets their class, their subject groups, their classmates and the teachers; a teacher every
+  class, group, pupil and parent, the other teachers, all teachers and all pupils; a parent the teachers. A
+  person's chat starts with `create_dm`. A new message to several of them, or to a class or group, is
+  `create_group` of type `message` with the contact ids as participants (`studtrieda7` a class,
+  `studplan12` a group, `studentonly5` a pupil, `ucitel3` a teacher, `rodic9` a parent, `ucitel*` and
+  `studentonly*` everyone); each contact's second identifier (`edupage:Trieda7`, `edupage:Student5`)
+  also reaches the parents. `resolve_identifier` takes the same ids, several joined by `;`. That room's
+  messages each start a new EduPage message to all of them, checked against the list again when sent. A
+  teacher's message can carry edupage.org's choices as
+  `"io.github.gooder24.edupage.options": {"important": true, "replies": "all" | "author" | "none"}`
+  (a read confirmation; who may answer). A room the bridge made for a message you sent to a class
+  only answers in its threads.
 
 ## Setup
 
@@ -90,8 +102,10 @@ the timetable read again after a substitution, each teacher's colour, and the he
 `signin`) carry what Weft draws; other clients ignore them.
 
 Sending works the Matrix way: a message in a person's room goes to that person, a reply answers its thread,
-and a file is its own media event. Weft's composer for the Python bridge instead sends an `m.text` with an
-explicit recipient and attachment list into the one shared room; it has to change before Weft can switch.
+a file is its own media event, and Weft's "Komu" list is the contact list with `create_group`. Weft's
+composer for the Python bridge instead sends an `m.text` with an explicit recipient and attachment list
+(`sk.karchi.edupage.recipients`, `sk.karchi.edupage.options`) into the one shared room; it has to change
+before Weft can switch.
 
 ## Tests
 

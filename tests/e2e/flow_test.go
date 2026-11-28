@@ -520,6 +520,118 @@ func TestBridge(t *testing.T) {
 		}
 	})
 
+	t.Run("a new message to a class and a classmate", func(t *testing.T) {
+		var list struct {
+			Contacts []struct {
+				ID          string   `json:"id"`
+				Name        string   `json:"name"`
+				Identifiers []string `json:"identifiers"`
+			} `json:"contacts"`
+		}
+		must(t, e.provision("GET", "/v3/contacts", nil, &list))
+		got := map[string]string{}
+		for _, ct := range list.Contacts {
+			got[ct.ID] = ct.Name + " " + strings.Join(ct.Identifiers, " ")
+		}
+		for id, want := range map[string]string{
+			"studtrieda7":    "7.A edupage:StudTrieda7 edupage:Trieda7",
+			"studplan31":     "7.A · Mathematics edupage:StudPlan31 edupage:Plan31",
+			"studentonly502": "Bo Classmate (7.A) edupage:StudentOnly502 edupage:Student502",
+			"ucitel11":       "Bea Teacher edupage:Ucitel11",
+		} {
+			if got[id] != want {
+				t.Errorf("contact %s is %q, want %q", id, got[id], want)
+			}
+		}
+		for _, id := range []string{"studtrieda8", "studentonly503", "rodic601", "ucitel*", "studentonly501"} {
+			if _, ok := got[id]; ok {
+				t.Errorf("a pupil is offered %s", id)
+			}
+		}
+		before := len(fake.Writes("createItem"))
+		if err := e.provision("POST", "/v3/create_group/message", map[string]any{"participants": []string{"studtrieda7", "StudTrieda8"}}, nil); err == nil ||
+			!strings.Contains(err.Error(), "404") {
+			t.Errorf("another class was taken: %v", err)
+		}
+		var group struct {
+			MXID string `json:"mxid"`
+		}
+		must(t, e.provision("POST", "/v3/create_group/message", map[string]any{"participants": []string{"Trieda7", "studentonly502"}}, &group))
+		if !until(wait, func() bool { return c.joined(group.MXID) }) {
+			t.Fatal("never joined the new message's room")
+		}
+		var name struct {
+			Name string `json:"name"`
+		}
+		if err := c.call("GET", "/_matrix/client/v3/rooms/"+group.MXID+"/state/m.room.name", nil, &name); err != nil || name.Name != "Bo Classmate, 7.A (with parents)" {
+			t.Errorf("room name %q %v", name.Name, err)
+		}
+		// A pupil's message carries no teacher's choices, even when asked for.
+		c.send(group.MXID, "m.room.message", map[string]any{"msgtype": "m.text", "body": "to the class and Bo",
+			"io.github.gooder24.edupage.options": map[string]any{"important": true, "replies": "none"}})
+		if !until(wait, func() bool { return len(fake.Writes("createItem")) == before+1 }) {
+			t.Fatalf("the message did not go (%d writes)", len(fake.Writes("createItem"))-before)
+		}
+		form := fake.Writes("createItem")[before].Form
+		if form.Get("selectedUser") != "StudentOnly502;Trieda7" || form.Get("text") != "to the class and Bo" || form.Get("receipt") != "0" ||
+			form.Has("repliesDisabled") || form.Has("repliesToAllDisabled") {
+			t.Errorf("new message %v", form)
+		}
+		// Polls read it back into the same room, once.
+		time.Sleep(3 * time.Second)
+		if n := count(c.roomEvents(group.MXID), isBody("to the class and Bo")); n != 1 {
+			t.Errorf("the message is in its room %d times", n)
+		}
+		if r := c.roomWhere(isBody("to the class and Bo")); r != group.MXID {
+			t.Errorf("the message came back in another room %s", r)
+		}
+		// The same recipients in another order are the same room.
+		var again struct {
+			MXID string `json:"mxid"`
+		}
+		must(t, e.provision("POST", "/v3/create_group/message", map[string]any{"participants": []string{"StudentOnly502", "trieda7"}}, &again))
+		if again.MXID != group.MXID {
+			t.Errorf("the same recipients got another room %s", again.MXID)
+		}
+		// The room the poll made for an earlier message of Alex's to the class answers in its threads only.
+		fake.Add(map[string]any{"typ": "sprava", "vlastnik": fakeedupage.Me, "vlastnik_meno": "Alex Pupil", "user": fakeedupage.Class,
+			"user_meno": "7.A", "text": "my earlier note to the class"})
+		class := ""
+		if !until(wait, func() bool { class = c.roomWhere(isBody("my earlier note to the class")); return class != "" }) {
+			t.Fatal("Alex's message to the class never came")
+		}
+		if class == group.MXID {
+			t.Error("the class's room is the new message's room")
+		}
+		sent := c.send(class, "m.room.message", map[string]any{"msgtype": "m.text", "body": "to the whole class by mistake"})
+		if !until(wait, func() bool {
+			return c.find(class, func(e map[string]any) bool {
+				return e["type"] == "com.beeper.message_send_status" && str(e, "content", "m.relates_to", "event_id") == sent &&
+					strings.HasPrefix(str(e, "content", "status"), "FAIL")
+			}) != nil
+		}) {
+			t.Error("a plain message in a class's room was not refused")
+		}
+		if n := len(fake.Writes("createItem")); n != before+1 {
+			t.Errorf("the refused message went out (%d writes)", n-before)
+		}
+
+		// Signed in again as a teacher, the same room's message carries the teacher's choices.
+		fake.SetUser(fakeedupage.Cyril)
+		fake.Expire()
+		defer func() { fake.SetUser(""); fake.Expire() }()
+		c.send(group.MXID, "m.room.message", map[string]any{"msgtype": "m.text", "body": "important, answer only me",
+			"io.github.gooder24.edupage.options": map[string]any{"important": true, "replies": "author"}})
+		if !until(wait, func() bool { return len(fake.Writes("createItem")) == before+2 }) {
+			t.Fatalf("the teacher's message did not go: %v", fake.Writes("createItem")[before:])
+		}
+		form = fake.Writes("createItem")[before+1].Form
+		if form.Get("selectedUser") != "StudentOnly502;Trieda7" || form.Get("receipt") != "1" || form.Get("repliesDisabled") != "0" ||
+			form.Get("repliesToAllDisabled") != "1" {
+			t.Errorf("teacher's message %v", form)
+		}
+	})
+
 	t.Run("expired session and changed password", func(t *testing.T) {
 		fake.Leave(fakeedupage.Eva)
 		fake.Expire()

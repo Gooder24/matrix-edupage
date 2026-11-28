@@ -8,7 +8,8 @@
   * [ ] Message edits, deletions, reactions (EduPage has none for messages)
   * [ ] Typing notifications, read receipts (EduPage has none)
   * [x] New messages to a person
-  * [ ] New messages to a class or group (only replies there)
+  * [x] New messages to classes, subject groups and several people, with or without parents
+  * [x] A teacher's choices: read confirmation, who may answer
 * EduPage → Matrix
   * [x] Messages, threads as replies, your own messages
   * [x] Attachments (as links)
@@ -29,4 +30,4 @@
   * [x] Second factor: confirmed in the app, or a mailed code
   * [x] Signing in again with the stored password when the session expires
   * [x] Searching teachers and starting a chat
-  * [ ] Searching pupils and parents
+  * [x] Searching classes, groups, pupils and parents, by role

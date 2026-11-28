@@ -63,6 +63,7 @@ type Server struct {
 	sessions    map[string]bool
 	log         []Entry
 	twoFactor   bool
+	userID      string // whom the user page says is signed in, Me unless SetUser changed it
 	captcha     bool
 	confirmed   bool
 	password    string
@@ -219,6 +220,14 @@ func (s *Server) Expire() {
 	s.sessions = map[string]bool{}
 }
 
+// SetUser makes the next sign-in's user page name another person, so the same login sees the school as
+// they do (a teacher's Ucitel12); "" is Alex again.
+func (s *Server) SetUser(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.userID = id
+}
+
 // SetPassword changes the account's password.
 func (s *Server) SetPassword(p string) {
 	s.mu.Lock()
@@ -283,8 +292,20 @@ func (s *Server) signedIn(r *http.Request) bool {
 const loginPage = `<html><script>var data = {"csrftoken":"csrf-1"};</script>Prihlásenie</html>`
 
 func (s *Server) userPage(w http.ResponseWriter) {
-	home := map[string]any{"userid": Me, "dbi": map[string]any{
-		"students": map[string]any{"501": map[string]any{"firstname": "Alex", "lastname": "Pupil"}},
+	// Alex is in 7.A with Bo, who has a parent, and in its Mathematics group; Cid is in another class.
+	user := Me
+	if s.userID != "" {
+		user = s.userID
+	}
+	home := map[string]any{"userid": user, "dbi": map[string]any{
+		"students": map[string]any{
+			"501": map[string]any{"firstname": "Alex", "lastname": "Pupil", "classid": "7"},
+			"502": map[string]any{"firstname": "Bo", "lastname": "Classmate", "classid": "7"},
+			"503": map[string]any{"firstname": "Cid", "lastname": "Other", "classid": "8"},
+		},
+		"classes": map[string]any{"7": map[string]any{"short": "7.A", "teacherid": "12"}, "8": map[string]any{"short": "8.B"}},
+		"plans":   map[string]any{"31": map[string]any{"triedaMeno": "7.A", "predmetMeno": "Mathematics", "students": []any{"501", "502"}}},
+		"parents": map[string]any{"601": map[string]any{"firstname": "Pat", "lastname": "Parent", "studentids": []any{"502"}}},
 		"teachers": map[string]any{
 			"11": map[string]any{"firstname": "Bea", "lastname": "Teacher"},
 			"12": map[string]any{"firstname": "Cyril", "lastname": "Teacher"},

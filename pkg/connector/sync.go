@@ -102,6 +102,7 @@ func (ec *EduPageClient) poll(ctx context.Context) error {
 		return err
 	}
 	ec.setTeachers(edu.Teachers())
+	ec.setSchool(edu.Recipients())
 	sort.SliceStable(items, func(i, j int) bool {
 		ti, tj := items[i].Time(), items[j].Time()
 		if !ti.Equal(tj) {

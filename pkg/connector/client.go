@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mau.fi/util/ptr"
@@ -36,6 +37,8 @@ type EduPageClient struct {
 	names    sync.Map // ghost ID → name seen on EduPage
 	groups   sync.Map // group portal ID → name
 	teachers sync.Map // ghost ID → edupage.Contact, the people the user can start a message to
+	// school: whom the last poll found the user may write to (edupage.Client.Recipients).
+	school atomic.Pointer[[]edupage.Recipient]
 	// tries: how many polls found an item still not in Matrix, by EduPage ID; only the poll goroutine
 	// touches it.
 	tries map[int64]int
@@ -61,6 +64,7 @@ var (
 	_ bridgev2.GhostDMCreatingNetworkAPI     = (*EduPageClient)(nil)
 	_ bridgev2.UserSearchingNetworkAPI       = (*EduPageClient)(nil)
 	_ bridgev2.ContactListingNetworkAPI      = (*EduPageClient)(nil)
+	_ bridgev2.GroupCreatingNetworkAPI       = (*EduPageClient)(nil)
 )
 
 func (ec *EduPageClient) meta() *UserLoginMetadata { return ec.UserLogin.Metadata.(*UserLoginMetadata) }
@@ -254,6 +258,9 @@ func (ec *EduPageClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal)
 		info.Type = ptr.Ptr(database.RoomTypeDM)
 		members.OtherUserID = person
 		members.MemberMap.Set(ec.member(person))
+	case strings.HasPrefix(string(portal.ID), komuPrefix):
+		lower, _ := portalKomu(portal.ID)
+		ec.komuInfo(portal, info, lower)
 	default:
 		info.Type = ptr.Ptr(database.RoomTypeGroupDM)
 		name := strings.TrimPrefix(string(portal.ID), "g:")

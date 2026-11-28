@@ -59,3 +59,35 @@ func TestNoticeTexts(t *testing.T) {
 		t.Error("school year")
 	}
 }
+
+func TestKomu(t *testing.T) {
+	list := []edupage.Recipient{
+		{ID: "StudTrieda7", Parents: "Trieda7", Name: "7.A", Kind: "class"},
+		{ID: "StudentOnly502", Parents: "Student502", Name: "Bo Classmate", Kind: "student"},
+		{ID: "Ucitel11", Name: "Bea Teacher", Kind: "teacher"},
+	}
+	lower, edu, err := pick(list, []string{"Trieda7", "ucitel11", "studentonly502", "UCITEL11", " "})
+	if err != nil || strings.Join(lower, ";") != "studentonly502;trieda7;ucitel11" || strings.Join(edu, ";") != "StudentOnly502;Trieda7;Ucitel11" {
+		t.Errorf("pick %v %v %v", lower, edu, err)
+	}
+	if name := komuName(list, lower); name != "Bo Classmate, 7.A (with parents), Bea Teacher" {
+		t.Errorf("name %q", name)
+	}
+	if _, _, err = pick(list, []string{"StudTrieda7", "StudTrieda8"}); err == nil || !strings.Contains(err.Error(), "StudTrieda8") {
+		t.Errorf("an id not offered was taken: %v", err)
+	}
+	if _, _, err = pick(list, nil); err == nil {
+		t.Error("no recipients were taken")
+	}
+	if got, ok := portalKomu(komuPortal(lower)); !ok || strings.Join(got, ";") != strings.Join(lower, ";") {
+		t.Errorf("portal %v", got)
+	}
+	if _, ok := portalKomu(groupPortal("trieda7")); ok {
+		t.Error("a class room the poll made counts as a new message's room")
+	}
+	for ghost, want := range map[string]string{"student502": "StudentOnly502", "studentonly502": "StudentOnly502", "ucitel11": "Ucitel11", "trieda7": ""} {
+		if got := sendID(makeUserID(ghost, "")); got != want {
+			t.Errorf("%s writes to %q", ghost, got)
+		}
+	}
+}

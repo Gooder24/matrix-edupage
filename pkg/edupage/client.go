@@ -316,15 +316,15 @@ func (c *Client) created(data []byte) (int64, error) {
 	return 0, errors.New("edupage did not accept the message")
 }
 
-// SendMessage starts a new message to one person, like edupage.org's "New message", and returns its id.
-// attachments maps each uploaded file's EduPage path to its name.
-func (c *Client) SendMessage(ctx context.Context, to, text string, attachments map[string]string) (int64, error) {
+// SendMessage starts a new message, like edupage.org's "New message", and returns its id. to is one
+// recipient id or several joined by ";" (see Recipients), attachments maps each uploaded file's EduPage
+// path to its name, and opts are a teacher's choices (nil for everyone else).
+func (c *Client) SendMessage(ctx context.Context, to, text string, attachments map[string]string, opts *Options) (int64, error) {
 	if attachments == nil {
 		attachments = map[string]string{}
 	}
-	_, data, err := c.postForm(ctx, c.Base()+"/timeline/?=&akcia=createItem&eqav=1&maxEqav=7", EncodeRequestBody([]Pair{
-		{"selectedUser", to}, {"text", text}, {"attachements", pyJSON(attachments)}, {"receipt", "0"}, {"typ", "sprava"},
-	}))
+	fields := append([]Pair{{"selectedUser", to}, {"text", text}, {"attachements", pyJSON(attachments)}}, opts.fields()...)
+	_, data, err := c.postForm(ctx, c.Base()+"/timeline/?=&akcia=createItem&eqav=1&maxEqav=7", EncodeRequestBody(append(fields, Pair{"typ", "sprava"})))
 	if err != nil {
 		return 0, err
 	}
